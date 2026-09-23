@@ -1,5 +1,5 @@
 //@version=6
-indicator("SMC Context Companion v1.4", shorttitle = "SMC Sessions", overlay = true, max_bars_back = 1000, max_lines_count = 150, max_labels_count = 150, max_boxes_count = 40)
+indicator("SMC Context Companion v1.5", shorttitle = "SMC Sessions", overlay = true, max_bars_back = 1000, max_lines_count = 150, max_labels_count = 150, max_boxes_count = 40)
 // Independent context indicator. No ORB logic, orders, dashboard or performance claims.
 // Original mechanical definitions; not a reproduction of a creator's trading method.
 // Confirmed pivots are used only AFTER their right-hand bars have completed.
@@ -76,6 +76,7 @@ string continuationWindowMode = input.string("Full sessions", "Pullback signal w
 int continuationSessionMinutes = input.int(480, "Full-session length (minutes)", minval = 60, maxval = 720, step = 30, group = GQ, tooltip = "Used only for Full sessions. Each window starts at the configured London or New York start time.")
 string continuationBiasMode = input.string("Both HTFs agree", "Pullback HTF direction", options = ["Both HTFs agree", "HTF 2 only"], group = GQ)
 string continuationZoneKinds = input.string("OB or FVG", "Pullback zone type", options = ["OB or FVG", "OB only", "FVG only"], group = GQ)
+bool continuationRequireChartAlignment = input.bool(true, "Pullback: require chart structure alignment", group = GQ, tooltip = "Default on. Blocks a pullback signal when the latest confirmed chart BOS/CHoCH direction disagrees with the selected HTF direction. Turn off only if you intentionally want HTF-only entries against chart structure.")
 bool continuationRequireStructure = input.bool(false, "Pullback: require same-direction BOS / CHoCH", group = GQ)
 bool continuationRequireDisplacement = input.bool(false, "Pullback: require displacement confirmation", group = GQ)
 float continuationStopBuffer = input.float(0.1, "Pullback stop buffer (ATR)", minval = 0.0, maxval = 2.0, step = 0.05, group = GQ)
@@ -578,7 +579,8 @@ if barstate.isconfirmed
         continuationSignalCount := 0
     if runPullbackEngine and inContinuationSession and continuationWindowId != 0 and continuationSignalCount < maxSetupsPerWindow
         int pullbackDir = continuationBiasMode == "Both HTFs agree" ? alignment : bias2
-        bool pullbackBiasReady = pullbackDir != 0
+        bool pullbackChartPass = not continuationRequireChartAlignment or chartBias == pullbackDir
+        bool pullbackBiasReady = pullbackDir != 0 and pullbackChartPass
         float pullbackBody = math.max(math.abs(close - open), syminfo.mintick)
         bool pullbackBullEngulf = close > open and close >= open[1] and open <= close[1]
         bool pullbackBearEngulf = close < open and close <= open[1] and open >= close[1]
@@ -697,8 +699,9 @@ if barstate.islast
         float confirmedClose = barstate.isconfirmed ? close : close[1]
         string locationText = not rangeValid ? "Range unavailable" : confirmedClose > rangeHigh ? "Above range" : confirmedClose < rangeLow ? "Below range" : confirmedClose > midpoint ? "Premium" : confirmedClose < midpoint ? "Discount" : "At 50%"
         string rangeTf = rangeSource == "HTF 1" ? htf1 : htf2
-        string caption = f_tf(htf1) + ": " + f_direction(bias1) + " | " + f_tf(htf2) + ": " + f_direction(bias2) + "\n" + f_alignment() + " | " + f_tf(rangeTf) + " " + locationText
-        color c = alignment == 1 ? bullColor : alignment == -1 ? bearColor : neutralColor
+        string caption = f_tf(htf1) + ": " + f_direction(bias1) + " | " + f_tf(htf2) + ": " + f_direction(bias2) + "\nChart " + timeframe.period + ": " + f_direction(chartBias) + " | " + f_alignment() + " | " + f_tf(rangeTf) + " " + locationText
+        bool chartAlignedWithHtfs = alignment != 0 and chartBias == alignment
+        color c = chartAlignedWithHtfs ? (alignment == 1 ? bullColor : bearColor) : neutralColor
         context := label.new(bar_index + 2, confirmedClose, caption, style = label.style_label_left, color = color.new(chart.bg_color, 10), textcolor = c, size = size.small)
 
 plotshape(smcBuySignal, "SMC qualified BUY", shape.triangleup, location.belowbar, smcBuyColor, text = "BUY", textcolor = smcBuyColor, size = size.tiny)

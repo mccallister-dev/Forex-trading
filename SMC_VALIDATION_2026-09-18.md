@@ -1,5 +1,12 @@
 # SMC chart validation — 18 September 2026
 
+## 23 September 2026 — v1.5 chart-alignment correction
+
+- The XAUUSD M5 review exposed HTF-bullish BUY signals after the chart structure had already changed bearish.
+- Pullback continuation now requires chart structure to agree with the selected HTF direction by default, and the context label displays the chart-timeframe state.
+- Static fixtures cover the reported HTF-buy/chart-bearish conflict.
+- The exact v1.5 edits compiled successfully in the signed-in TradingView Pine Editor on OANDA:XAUUSD M5. Historical chart recalculation removed the reported BUY plans from the bearish leg and displayed `Chart 5: Bearish` alongside the still-bullish H1/H4 swing states. This is a targeted visual check of the reported case, not a broad performance or robustness validation.
+
 ## 23 September 2026 — v1.4 pullback-continuation revision
 
 - Added the separate HTF pullback-continuation model, full-session/any-time window options, internal hidden-zone calculation and a two-signal default quota.

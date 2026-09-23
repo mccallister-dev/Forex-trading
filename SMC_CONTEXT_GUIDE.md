@@ -1,12 +1,18 @@
 # SMC Context Companion v1
 
+## v1.5 — chart-structure agreement
+
+**Pullback: require chart structure alignment** now defaults on. A continuation signal is blocked unless the latest confirmed chart BOS/CHoCH direction agrees with the selected HTF direction. For example, an H1/H4 bullish state cannot produce a BUY while the M5 structure state is bearish. Turning this filter off deliberately restores HTF-only behavior.
+
+The context label now includes the chart-timeframe structure state. HTF direction is still based on the last confirmed HTF swing break and can lag a fast selloff; it should not be read as a real-time trend claim. When chart structure and HTFs disagree, the label is neutral and the default continuation model waits.
+
 ## v1.4 — HTF pullback continuation
 
 **HTF pullback continuation** is now the default setup model. It addresses trend-following opportunities such as selling a confirmed pullback into supply while the selected higher timeframes are bearish. It does not require a new liquidity sweep before every entry.
 
 The confirmed sequence is:
 
-1. Determine direction from **Both HTFs agree** (default) or **HTF 2 only**.
+1. Determine direction from **Both HTFs agree** (default) or **HTF 2 only**, then require the confirmed chart structure to agree by default.
 2. Wait for price to overlap an already-active, same-direction chart OB or FVG. The zone must have existed before the signal candle; a zone cannot signal on its creation bar.
 3. Require an enabled engulfing or rejection candle in the HTF direction.
 4. Optionally require a same-direction chart BOS/CHoCH and/or displacement on that confirmation candle.

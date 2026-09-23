@@ -66,17 +66,22 @@ def candidate_slot_result(existing_slots, maximum, invalidated=False, replacemen
     return used, used < maximum
 
 
-def pullback_qualifies(htf_direction, zone_direction, overlap, engulfing=False, rejection=False, structure_ok=True, displacement_ok=True):
-    return htf_direction != 0 and zone_direction == htf_direction and overlap and (engulfing or rejection) and structure_ok and displacement_ok
+def pullback_qualifies(htf_direction, chart_direction, zone_direction, overlap, engulfing=False, rejection=False, chart_filter=True, structure_ok=True, displacement_ok=True):
+    chart_ok = not chart_filter or chart_direction == htf_direction
+    return htf_direction != 0 and chart_ok and zone_direction == htf_direction and overlap and (engulfing or rejection) and structure_ok and displacement_ok
 
 
 class Rules(unittest.TestCase):
     def test_bearish_htf_supply_rejection_qualifies(self):
-        self.assertTrue(pullback_qualifies(-1, -1, True, rejection=True))
+        self.assertTrue(pullback_qualifies(-1, -1, -1, True, rejection=True))
 
     def test_pullback_rejects_countertrend_or_unconfirmed_candle(self):
-        self.assertFalse(pullback_qualifies(-1, 1, True, rejection=True))
-        self.assertFalse(pullback_qualifies(-1, -1, True))
+        self.assertFalse(pullback_qualifies(-1, -1, 1, True, rejection=True))
+        self.assertFalse(pullback_qualifies(-1, -1, -1, True))
+
+    def test_pullback_rejects_htf_buy_during_chart_downtrend(self):
+        self.assertFalse(pullback_qualifies(1, -1, 1, True, rejection=True))
+        self.assertTrue(pullback_qualifies(1, -1, 1, True, rejection=True, chart_filter=False))
 
     def test_default_candidate_consumes_only_slot(self):
         self.assertEqual(candidate_slot_result(0, 1), (1, False))
@@ -158,7 +163,7 @@ class Rules(unittest.TestCase):
 
 class SourceGuards(unittest.TestCase):
     def test_separate_indicator_no_trading_dashboard_or_orb_dependency(self):
-        self.assertIn('indicator("SMC Context Companion v1.4"', SOURCE)
+        self.assertIn('indicator("SMC Context Companion v1.5"', SOURCE)
         for token in ("strategy(", "strategy.entry", "strategy.exit", "table.new", "import ", "scale.none"):
             self.assertNotIn(token, SOURCE)
 
@@ -201,6 +206,7 @@ class SourceGuards(unittest.TestCase):
             'input.bool(false, "Sweep model: replace invalidated candidate"',
             'input.string("Full sessions", "Pullback signal window"',
             'input.string("Both HTFs agree", "Pullback HTF direction"',
+            'input.bool(true, "Pullback: require chart structure alignment"',
             'input.string("Confirmation entry", "Sweep-reversal entry model"',
             'input.bool(true, "Sweep: require HTF 1 OB/FVG interaction"',
             'input.bool(true, "Sweep: require displacement FVG"',
@@ -219,6 +225,8 @@ class SourceGuards(unittest.TestCase):
         self.assertIn('continuationSignalCount += 1', SOURCE)
         self.assertIn('if na(continuationKey) or continuationWindowKey != continuationKey', SOURCE)
         self.assertIn('bar_index > z.born and overlap', SOURCE)
+        self.assertIn('chartBias == pullbackDir', SOURCE)
+        self.assertIn('"\\nChart " + timeframe.period + ": " + f_direction(chartBias)', SOURCE)
         self.assertNotIn('openingUsed', SOURCE)
 
     def test_backtest_orb_sources_untouched(self):
