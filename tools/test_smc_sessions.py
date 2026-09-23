@@ -50,6 +50,9 @@ class SessionRules(unittest.TestCase):
         self.assertNotIn('showFvg', block)
         self.assertIn('box.delete(candidateBox)', block)
         self.assertIn('windowSetupCount += 1', block)
+        self.assertIn('continuationWindowMode == "Full sessions"', SOURCE)
+        self.assertIn('continuationSignalCount < maxSetupsPerWindow', SOURCE)
+        self.assertIn('No liquidity sweep is required.', SOURCE)
         self.assertNotIn('openingUsed', block)
 
 if __name__ == '__main__':

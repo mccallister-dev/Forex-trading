@@ -1,5 +1,5 @@
 //@version=6
-indicator("SMC Context Companion v1.3", shorttitle = "SMC Sessions", overlay = true, max_bars_back = 1000, max_lines_count = 150, max_labels_count = 150, max_boxes_count = 40)
+indicator("SMC Context Companion v1.4", shorttitle = "SMC Sessions", overlay = true, max_bars_back = 1000, max_lines_count = 150, max_labels_count = 150, max_boxes_count = 40)
 // Independent context indicator. No ORB logic, orders, dashboard or performance claims.
 // Original mechanical definitions; not a reproduction of a creator's trading method.
 // Confirmed pivots are used only AFTER their right-hand bars have completed.
@@ -69,13 +69,21 @@ float candidateBuffer = input.float(0.1, "Sweep invalidation buffer (ATR)", minv
 
 const string GQ = "06 | SMC buy/sell signals"
 bool showSmcSignals = input.bool(true, "Show confirmed SMC BUY / SELL signals", group = GQ)
-int maxSetupsPerWindow = input.int(1, "Maximum setups per opening window", minval = 1, maxval = 3, group = GQ, tooltip = "Maximum qualified candidate slots in each configured London or New York opening window. Only one candidate can be active at a time. Default 1 preserves the original clean-chart behaviour.")
-bool allowReplacementAfterInvalidation = input.bool(false, "Allow replacement after candidate invalidation", group = GQ, tooltip = "When enabled, a candidate invalidated before producing a signal returns its slot, allowing a later fresh sweep and structure sequence in the same opening window. Completed signals always consume a slot.")
-string smcEntryModel = input.string("Confirmation entry", "Entry model", options = ["Risk entry", "Confirmation entry"], group = GQ, tooltip = "Risk entry plans a limit at the new displacement FVG as soon as the shift is confirmed. Confirmation entry waits for a later engulfing or rejection candle after price returns to the entry zone.")
+string smcSetupModel = input.string("HTF pullback continuation", "Setup model", options = ["HTF pullback continuation", "Sweep reversal"], group = GQ, tooltip = "Pullback continuation follows the selected higher-timeframe direction and confirms a retracement into an active chart OB/FVG. Sweep reversal preserves the stricter opening-window sweep and structure-shift sequence.")
+int maxSetupsPerWindow = input.int(2, "Maximum setups per signal window", minval = 1, maxval = 3, group = GQ, tooltip = "Caps completed pullback signals or sweep-reversal candidate slots in each selected window. Only one sweep candidate can be active at a time.")
+bool allowReplacementAfterInvalidation = input.bool(false, "Sweep model: replace invalidated candidate", group = GQ, tooltip = "Sweep reversal only. When enabled, a candidate invalidated before producing a signal returns its slot. Completed signals always consume a slot.")
+string continuationWindowMode = input.string("Full sessions", "Pullback signal window", options = ["Opening windows", "Full sessions", "Any time"], group = GQ)
+int continuationSessionMinutes = input.int(480, "Full-session length (minutes)", minval = 60, maxval = 720, step = 30, group = GQ, tooltip = "Used only for Full sessions. Each window starts at the configured London or New York start time.")
+string continuationBiasMode = input.string("Both HTFs agree", "Pullback HTF direction", options = ["Both HTFs agree", "HTF 2 only"], group = GQ)
+string continuationZoneKinds = input.string("OB or FVG", "Pullback zone type", options = ["OB or FVG", "OB only", "FVG only"], group = GQ)
+bool continuationRequireStructure = input.bool(false, "Pullback: require same-direction BOS / CHoCH", group = GQ)
+bool continuationRequireDisplacement = input.bool(false, "Pullback: require displacement confirmation", group = GQ)
+float continuationStopBuffer = input.float(0.1, "Pullback stop buffer (ATR)", minval = 0.0, maxval = 2.0, step = 0.05, group = GQ)
+string smcEntryModel = input.string("Confirmation entry", "Sweep-reversal entry model", options = ["Risk entry", "Confirmation entry"], group = GQ, tooltip = "Sweep reversal only. Risk entry plans at the new displacement FVG; Confirmation entry waits for a later return and candle confirmation.")
 string riskPlacement = input.string("FVG 50%", "Risk-entry placement", options = ["FVG open boundary", "FVG 50%"], group = GQ)
-bool requireHtfPoi = input.bool(true, "Require HTF 1 order block or FVG interaction", group = GQ, tooltip = "HTF 1 defaults to H1. This uses objective proxy zones derived from confirmed HTF candles; it is not a claim to reproduce any proprietary SMC implementation.")
-bool requireSignalAlignment = input.bool(true, "Require H1 / H4 structure alignment", group = GQ)
-bool requireEntryFvg = input.bool(true, "Require displacement to leave an entry FVG", group = GQ)
+bool requireHtfPoi = input.bool(true, "Sweep: require HTF 1 OB/FVG interaction", group = GQ, tooltip = "Sweep reversal only. This uses objective proxy zones derived from confirmed HTF candles.")
+bool requireSignalAlignment = input.bool(true, "Sweep: require HTF structure alignment", group = GQ)
+bool requireEntryFvg = input.bool(true, "Sweep: require displacement FVG", group = GQ)
 bool acceptEngulfing = input.bool(true, "Accept engulfing confirmation candle", group = GQ)
 bool acceptRejection = input.bool(true, "Accept rejection / pin confirmation candle", group = GQ)
 float rejectionWickRatio = input.float(1.5, "Minimum rejection wick / body", minval = 0.5, maxval = 5.0, step = 0.25, group = GQ)
@@ -90,20 +98,25 @@ color smcTargetColor = input.color(color.teal, "TP line colour", group = GQ)
 
 // Local calendar timestamps follow DST. Windows may cross midnight; weekdays
 // refer to the opening date. Only fully contained chart bars qualify.
-f_opening(string tz, int hh, int mm, bool enabled) =>
+f_window(string tz, int hh, int mm, bool enabled, int durationMinutes) =>
     int start = timestamp(tz, year(time, tz), month(time, tz), dayofmonth(time, tz), hh, mm)
     if time < start
         start := timestamp(tz, year(time, tz), month(time, tz), dayofmonth(time, tz) - 1, hh, mm)
-    int finish = start + openingMinutes * 60000
+    int finish = start + durationMinutes * 60000
     int weekday = dayofweek(start, tz)
     bool active = enabled and weekday >= dayofweek.monday and weekday <= dayofweek.friday and time >= start and time < finish and time_close <= finish
     [active, start, finish]
-[inLondon, londonStart, londonEnd] = f_opening(londonTimezone, londonHour, londonMinute, londonEnabled)
-[inNy, nyStart, nyEnd] = f_opening(nyTimezone, nyHour, nyMinute, nyEnabled)
+[inLondon, londonStart, londonEnd] = f_window(londonTimezone, londonHour, londonMinute, londonEnabled, openingMinutes)
+[inNy, nyStart, nyEnd] = f_window(nyTimezone, nyHour, nyMinute, nyEnabled, openingMinutes)
+[inLondonFull, londonFullStart, londonFullEnd] = f_window(londonTimezone, londonHour, londonMinute, londonEnabled, continuationSessionMinutes)
+[inNyFull, nyFullStart, nyFullEnd] = f_window(nyTimezone, nyHour, nyMinute, nyEnabled, continuationSessionMinutes)
 // NY takes priority if customized windows overlap; never mix their sweep state.
 int openingId = inNy ? 2 : inLondon ? 1 : 0
 int openingKey = inNy ? nyStart : inLondon ? londonStart : 0
 int openingEnd = inNy ? nyEnd : inLondon ? londonEnd : 0
+bool inContinuationSession = continuationWindowMode == "Opening windows" ? openingId != 0 : continuationWindowMode == "Full sessions" ? inNyFull or inLondonFull : true
+int continuationWindowId = continuationWindowMode == "Any time" ? 3 : continuationWindowMode == "Opening windows" ? openingId : inNyFull ? 2 : inLondonFull ? 1 : 0
+int continuationWindowKey = continuationWindowMode == "Any time" ? year(time, retentionZone) * 10000 + month(time, retentionZone) * 100 + dayofmonth(time, retentionZone) : continuationWindowMode == "Opening windows" ? openingKey : inNyFull ? nyFullStart : inLondonFull ? londonFullStart : 0
 bool openingChanged = openingId != openingId[1] or openingKey != openingKey[1]
 bool startHighlight = (inLondon and (not inLondon[1] or londonStart != londonStart[1])) or (inNy and (not inNy[1] or nyStart != nyStart[1]))
 bgcolor(highlightStarts and (sessionShade == "Opening window" ? openingId != 0 : startHighlight) ? color.new(color.silver, 94) : na, title = "Session opening highlight")
@@ -125,6 +138,8 @@ var float candidateEntryBottom = na
 var bool candidatePoiOk = false
 var bool candidateTouched = false
 var int windowSetupCount = 0
+var int continuationKey = na
+var int continuationSignalCount = 0
 bool smcBuySignal = false
 bool smcSellSignal = false
 float smcSignalEntry = na
@@ -249,6 +264,7 @@ type Zone
     int day
     bool touched = false
     bool reacted = false
+    bool signaled = false
 
 type SmcPlan
     int dir
@@ -278,7 +294,7 @@ f_mark(int startBar, float level, string caption, int dir, int day) =>
     label lb = label.new(bar_index, level, caption, style = dir == 1 ? label.style_label_up : label.style_label_down, color = color.new(c, 15), textcolor = color.white, size = size.tiny)
     array.push(events, EventMark.new(ln, lb, day))
 
-f_addZone(float top, float bottom, int dir, string kind, int day) =>
+f_addZone(float top, float bottom, int dir, string kind, int day, bool visible) =>
     // Retain at most zoneCount of each (kind, direction), deleting oldest first.
     int count = 0
     for z in zones
@@ -288,12 +304,15 @@ f_addZone(float top, float bottom, int dir, string kind, int day) =>
         for j = 0 to array.size(zones) - 1
             Zone z = array.get(zones, j)
             if z.kind == kind and z.dir == dir
-                box.delete(z.drawing)
+                if not na(z.drawing)
+                    box.delete(z.drawing)
                 array.remove(zones, j)
                 break
     color c = dir == 1 ? bullColor : bearColor
     string caption = zoneText ? (dir == 1 ? "Demand " : "Supply ") + kind + " · " + timeframe.period : ""
-    box bx = box.new(bar_index, top, bar_index + projection, bottom, border_color = color.new(c, 35), bgcolor = color.new(c, zoneFade), text = caption, text_color = c, text_size = size.tiny, text_halign = text.align_right)
+    box bx = na
+    if visible
+        bx := box.new(bar_index, top, bar_index + projection, bottom, border_color = color.new(c, 35), bgcolor = color.new(c, zoneFade), text = caption, text_color = c, text_size = size.tiny, text_halign = text.align_right)
     array.push(zones, Zone.new(bx, top, bottom, dir, kind, bar_index, day))
 
 float atr = ta.atr(14)
@@ -361,12 +380,14 @@ if barstate.isconfirmed
                 supplyReaction := supplyReaction or z.dir == -1
                 z.reacted := true
             if remove
-                box.delete(z.drawing)
+                if not na(z.drawing)
+                    box.delete(z.drawing)
                 array.remove(zones, i)
             else
                 z.touched := z.touched or overlap
-                box.set_right(z.drawing, bar_index + projection)
-                box.set_border_style(z.drawing, z.touched ? line.style_dashed : line.style_solid)
+                if not na(z.drawing)
+                    box.set_right(z.drawing, bar_index + projection)
+                    box.set_border_style(z.drawing, z.touched ? line.style_dashed : line.style_solid)
 
     bool highLive = not na(swingHigh) and bar_index - highKnown <= swingLife
     bool lowLive = not na(swingLow) and bar_index - lowKnown <= swingLife
@@ -398,7 +419,7 @@ if barstate.isconfirmed
             lowUsed := true
         // OB proxy: nearest opposing candle in the impulse's bounded search,
         // only when the structure-break candle itself has displacement.
-        if showOb and (breakDir == 1 ? bullDisplacement : bearDisplacement)
+        if (showOb or (showSmcSignals and smcSetupModel == "HTF pullback continuation")) and (breakDir == 1 ? bullDisplacement : bearDisplacement)
             int sourceOrigin = breakDir == 1 ? lowOrigin : highOrigin
             for j = 1 to obLookback
                 bool withinLeg = not na(sourceOrigin) and bar_index - j >= sourceOrigin
@@ -408,19 +429,19 @@ if barstate.isconfirmed
                     float bottom = obBounds == "Full candle" ? low[j] : math.min(open[j], close[j])
                     bool departed = breakDir == 1 ? close > top : close < bottom
                     if departed and top > bottom
-                        f_addZone(top, bottom, breakDir, "OB", dayNumber)
+                        f_addZone(top, bottom, breakDir, "OB", dayNumber, showOb)
                     break
 
-    if showFvg and bar_index >= 2
+    if (showFvg or (showSmcSignals and smcSetupModel == "HTF pullback continuation")) and bar_index >= 2
         float minGap = math.max(syminfo.mintick, atr * gapMinimum)
         if low > high[2] and low - high[2] >= minGap and bullDisplacement[1]
-            f_addZone(low, high[2], 1, "FVG", dayNumber)
+            f_addZone(low, high[2], 1, "FVG", dayNumber, showFvg)
         if high < low[2] and low[2] - high >= minGap and bearDisplacement[1]
-            f_addZone(low[2], high, -1, "FVG", dayNumber)
+            f_addZone(low[2], high, -1, "FVG", dayNumber, showFvg)
 
     // Session signal engine: one active candidate at a time, within the selected
     // per-window slot limit. Sweep -> displaced shift -> FVG/OB entry zone.
-    bool runEntryEngine = showCandidates or showSmcSignals
+    bool runEntryEngine = smcSetupModel == "Sweep reversal" and (showCandidates or showSmcSignals)
     if openingChanged or openingId == 0 or not runEntryEngine
         pendingDir := 0
         pendingPoiOk := false
@@ -547,6 +568,49 @@ if barstate.isconfirmed
                 sweepExtreme := dir == 1 ? low : high
                 sweepStop := sweepExtreme - dir * math.max(syminfo.mintick, atr * candidateBuffer)
                 frozenTrigger := dir == 1 ? swingHigh : swingLow
+
+    // Trend-continuation model: follow confirmed HTF direction, then wait for a
+    // pullback into an already-active same-direction chart OB/FVG and a
+    // rejection or engulfing close. No liquidity sweep is required.
+    bool runPullbackEngine = showSmcSignals and smcSetupModel == "HTF pullback continuation"
+    if na(continuationKey) or continuationWindowKey != continuationKey
+        continuationKey := continuationWindowKey
+        continuationSignalCount := 0
+    if runPullbackEngine and inContinuationSession and continuationWindowId != 0 and continuationSignalCount < maxSetupsPerWindow
+        int pullbackDir = continuationBiasMode == "Both HTFs agree" ? alignment : bias2
+        bool pullbackBiasReady = pullbackDir != 0
+        float pullbackBody = math.max(math.abs(close - open), syminfo.mintick)
+        bool pullbackBullEngulf = close > open and close >= open[1] and open <= close[1]
+        bool pullbackBearEngulf = close < open and close <= open[1] and open >= close[1]
+        bool pullbackBullReject = close > open and math.min(open, close) - low >= pullbackBody * rejectionWickRatio
+        bool pullbackBearReject = close < open and high - math.max(open, close) >= pullbackBody * rejectionWickRatio
+        bool pullbackCandle = pullbackDir == 1 ? (acceptEngulfing and pullbackBullEngulf) or (acceptRejection and pullbackBullReject) : (acceptEngulfing and pullbackBearEngulf) or (acceptRejection and pullbackBearReject)
+        bool pullbackStructurePass = not continuationRequireStructure or breakDir == pullbackDir
+        bool pullbackDisplacementPass = not continuationRequireDisplacement or (pullbackDir == 1 ? bullDisplacement : bearDisplacement)
+        int pullbackZoneIndex = na
+        if pullbackBiasReady and pullbackCandle and pullbackStructurePass and pullbackDisplacementPass and array.size(zones) > 0
+            for i = array.size(zones) - 1 to 0
+                Zone z = array.get(zones, i)
+                bool kindPass = continuationZoneKinds == "OB or FVG" or (continuationZoneKinds == "OB only" and z.kind == "OB") or (continuationZoneKinds == "FVG only" and z.kind == "FVG")
+                bool overlap = high >= z.bottom and low <= z.top
+                if z.dir == pullbackDir and kindPass and not z.signaled and bar_index > z.born and overlap
+                    pullbackZoneIndex := i
+                    break
+        if not na(pullbackZoneIndex)
+            Zone signalZone = array.get(zones, pullbackZoneIndex)
+            float plannedEntry = close
+            float stopBuffer = math.max(syminfo.mintick, atr * continuationStopBuffer)
+            float plannedStop = pullbackDir == 1 ? math.floor((signalZone.bottom - stopBuffer) / syminfo.mintick) * syminfo.mintick : math.ceil((signalZone.top + stopBuffer) / syminfo.mintick) * syminfo.mintick
+            float riskDistance = pullbackDir * (plannedEntry - plannedStop)
+            if riskDistance > syminfo.mintick
+                smcBuySignal := pullbackDir == 1
+                smcSellSignal := pullbackDir == -1
+                smcSignalEntry := plannedEntry
+                smcSignalStop := plannedStop
+                smcSignalTarget := math.round_to_mintick(plannedEntry + pullbackDir * riskDistance * smcRewardRisk)
+                smcSignalModel := "HTF pullback " + signalZone.kind
+                signalZone.signaled := true
+                continuationSignalCount += 1
 
     if (smcBuySignal or smcSellSignal) and showSmcLevels and array.size(smcPlans) < 30
         int signalDir = smcBuySignal ? 1 : -1

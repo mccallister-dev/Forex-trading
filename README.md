@@ -10,7 +10,7 @@ The repository contains Pine Script indicators and strategies, supporting resear
 |---|---|---|
 | `ORB_ICT_Manual_Signals_v3.pine` | Indicator | Confirmed-bar ORB signals, M5/M15/M30 Signal Flow, configurable ORB presentation and manual entry/SL/TP estimates. |
 | `ORB_ICT_Backtest_Strategy_v2.pine` | Strategy | Separate Strategy Tester implementation retained for controlled historical comparisons. |
-| `SMC_Context_Companion_v1.pine` | Indicator | Session sweeps, structure, HTF context, OB/FVG proxies and filtered SMC BUY/SELL plans. |
+| `SMC_Context_Companion_v1.pine` | Indicator | HTF pullback-continuation and sweep-reversal models with session context, OB/FVG proxies and filtered BUY/SELL plans. |
 | `ORB_ICT_Session_Liquidity_Framework_v2.pine` | Indicator | Clean session and ORB observation framework with compact visuals and confirmed-bar lifecycle logic. |
 
 The manual ORB indicator and backtest strategy are deliberately separate. Changes to one should not be assumed to exist in the other.

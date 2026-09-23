@@ -1,5 +1,12 @@
 # SMC chart validation — 18 September 2026
 
+## 23 September 2026 — v1.4 pullback-continuation revision
+
+- Added the separate HTF pullback-continuation model, full-session/any-time window options, internal hidden-zone calculation and a two-signal default quota.
+- The earlier sweep-reversal model remains selectable and retains its opening-window sequence.
+- Local rule fixtures and source guards pass for bearish supply rejection, countertrend rejection, confirmed-bar zone age, quota reset and sweep-model independence.
+- This revision has **not yet been compiled or replayed in TradingView**. The older live-compilation results below apply only to the exact earlier sources and must not be presented as validation of v1.4.
+
 ## v1.1 session-candidate update (08:23 SAST)
 
 - Final source SHA-256: `2d5d919360a0d7057d07b469ce7ddd01fafecffe91d17dc6cd56081d679c1c19`.

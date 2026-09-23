@@ -1,21 +1,37 @@
 # SMC Context Companion v1
 
+## v1.4 — HTF pullback continuation
+
+**HTF pullback continuation** is now the default setup model. It addresses trend-following opportunities such as selling a confirmed pullback into supply while the selected higher timeframes are bearish. It does not require a new liquidity sweep before every entry.
+
+The confirmed sequence is:
+
+1. Determine direction from **Both HTFs agree** (default) or **HTF 2 only**.
+2. Wait for price to overlap an already-active, same-direction chart OB or FVG. The zone must have existed before the signal candle; a zone cannot signal on its creation bar.
+3. Require an enabled engulfing or rejection candle in the HTF direction.
+4. Optionally require a same-direction chart BOS/CHoCH and/or displacement on that confirmation candle.
+5. Estimate entry at the confirmation close, SL beyond the zone edge plus the pullback ATR buffer, and TP at the selected reward/risk multiple.
+
+The model calculates the internal OB/FVG zones required for signals even when their display toggles are off. Each zone can issue at most one pullback signal. **Pullback signal window** selects Opening windows, Full sessions or Any time. Full sessions default to 480 minutes from each configured London/New York start; overlapping windows use New York priority. **Maximum setups per signal window** defaults to two.
+
+For the stricter original behavior, choose **Setup model = Sweep reversal**. Its sweep, displaced shift, HTF1 POI and optional confirmation sequence remains separate and unchanged.
+
 ## v1.3 — configurable opening-window capacity
 
-The signal layer can now allow one to three sequential qualified candidates per London or New York opening window. **Maximum setups per opening window = 1** and **Allow replacement after candidate invalidation = Off** exactly preserve the previous one-shot behaviour. Candidates remain strictly sequential; the script never holds two active candidate boxes at once.
+The signal layer can allow one to three sequential qualified candidates per signal window. To reproduce the original one-shot behavior, choose **Sweep reversal**, set **Maximum setups per signal window = 1**, and leave **Sweep model: replace invalidated candidate = Off**. Sweep candidates remain strictly sequential; the script never holds two active candidate boxes at once.
 
 ## v1.2 — filtered SMC BUY / SELL plans
 
 The indicator now has an optional **06 | SMC buy/sell signals** layer. It remains an indicator: it places no orders, sizes no broker position and is not a Strategy Tester script.
 
-The default sequence follows the attached entry guide mechanically: opening-window liquidity sweep, later displaced structure shift, a newly created chart-timeframe FVG, optional confirmed H1 POI interaction, and optional H1/H4 alignment. Candidate capacity is configurable from one to three per configured London or New York opening window. The default remains one; only one candidate can be active at a time.
+The Sweep reversal sequence follows the attached entry guide mechanically: opening-window liquidity sweep, later displaced structure shift, a newly created chart-timeframe FVG, optional confirmed HTF1 POI interaction, and optional HTF alignment. Candidate capacity is configurable from one to three per configured London or New York opening window; only one candidate can be active at a time.
 
 Choose the signal model and gates in Inputs:
 
-- **Risk entry** issues on the displaced structure-shift close and estimates an entry at the FVG open boundary or FVG 50%. SL is beyond the sweep extreme plus the configured ATR buffer; TP is the selected R multiple.
-- **Confirmation entry** waits for a later return to the entry zone and then requires an enabled engulfing and/or rejection candle. Entry is estimated at that confirmation close; SL remains beyond the sweep; TP uses the selected R multiple.
-- **Maximum setups per opening window** is a hard slot limit from 1–3. A completed signal consumes one slot. With more than one slot, the next setup still requires a completely fresh sweep and structure sequence; candidates are never simultaneous.
-- **Allow replacement after candidate invalidation** returns the slot only when a candidate fails before producing a signal. With the default off, an invalidated candidate still consumes its slot. With maximum 1 and replacement on, a later valid candidate may replace a failed first attempt, but only one completed signal can be produced in that window.
+- **Sweep-reversal Risk entry** issues on the displaced structure-shift close and estimates an entry at the FVG open boundary or FVG 50%. SL is beyond the sweep extreme plus the configured ATR buffer; TP is the selected R multiple.
+- **Sweep-reversal Confirmation entry** waits for a later return to the entry zone and then requires an enabled engulfing and/or rejection candle. Entry is estimated at that confirmation close; SL remains beyond the sweep; TP uses the selected R multiple.
+- **Maximum setups per signal window** is a hard limit from 1–3. Pullback signals consume the quota directly; sweep candidates consume slots when created.
+- **Sweep model: replace invalidated candidate** returns a sweep slot only when its candidate fails before producing a signal. It does not apply to direct pullback-continuation confirmations.
 - Checkboxes independently control HTF1 OB/FVG interaction, H1/H4 alignment, displacement FVG, engulfing and rejection. If both confirmation-candle checkboxes are off while Confirmation entry is selected, no confirmation signal can qualify.
 - BUY/SELL markers and entry/SL/TP line colours are customizable. Plans remain drawings only. A later level touch updates the caption; if SL and TP occur inside the same chart candle, the result is reported as both touched rather than guessed.
 
@@ -46,7 +62,7 @@ An existing candidate is removed at window end, on a wick touching buffered swee
 
 Only the current active candidate box is retained: use Bar Replay to inspect previous openings. The faint session background remains historically visible. As of v1.2, the separate optional signal layer can add BUY/SELL markers, estimated entry/SL/TP drawings and alerts; it still adds no trades or dashboard.
 
-**Scope limitation:** these are chart-timeframe sweep/structure/OB candidates with an HTF direction filter, not the complete discretionary model discussed in chat. The script does NOT validate an H1 demand/supply POI, premium/discount eligibility, room to target, or a rejection-close entry. Those remain manual checks. No candidate appearing is a valid outcome; do not loosen settings merely to force a box.
+**Scope limitation:** both setup models use objective chart/HTF proxies, not a complete discretionary SMC method. Pullback continuation validates an active chart OB/FVG and candle confirmation, but it does not currently require premium/discount eligibility, quantify room to opposing liquidity, or consume a live economic calendar. Those remain manual checks. No signal appearing is a valid outcome; do not loosen settings merely to force one.
 
 Session/time behavior follows [TradingView's session documentation](https://www.tradingview.com/pine-script-docs/concepts/sessions/).
 
