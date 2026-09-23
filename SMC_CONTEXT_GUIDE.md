@@ -1,15 +1,21 @@
 # SMC Context Companion v1
 
+## v1.3 — configurable opening-window capacity
+
+The signal layer can now allow one to three sequential qualified candidates per London or New York opening window. **Maximum setups per opening window = 1** and **Allow replacement after candidate invalidation = Off** exactly preserve the previous one-shot behaviour. Candidates remain strictly sequential; the script never holds two active candidate boxes at once.
+
 ## v1.2 — filtered SMC BUY / SELL plans
 
 The indicator now has an optional **06 | SMC buy/sell signals** layer. It remains an indicator: it places no orders, sizes no broker position and is not a Strategy Tester script.
 
-The default sequence follows the attached entry guide mechanically: opening-window liquidity sweep, later displaced structure shift, a newly created chart-timeframe FVG, optional confirmed H1 POI interaction, and optional H1/H4 alignment. Only one candidate and one qualified signal can be produced per configured London or New York opening window. This deliberate quota, plus the displacement and context gates, keeps the chart manageable.
+The default sequence follows the attached entry guide mechanically: opening-window liquidity sweep, later displaced structure shift, a newly created chart-timeframe FVG, optional confirmed H1 POI interaction, and optional H1/H4 alignment. Candidate capacity is configurable from one to three per configured London or New York opening window. The default remains one; only one candidate can be active at a time.
 
 Choose the signal model and gates in Inputs:
 
 - **Risk entry** issues on the displaced structure-shift close and estimates an entry at the FVG open boundary or FVG 50%. SL is beyond the sweep extreme plus the configured ATR buffer; TP is the selected R multiple.
 - **Confirmation entry** waits for a later return to the entry zone and then requires an enabled engulfing and/or rejection candle. Entry is estimated at that confirmation close; SL remains beyond the sweep; TP uses the selected R multiple.
+- **Maximum setups per opening window** is a hard slot limit from 1–3. A completed signal consumes one slot. With more than one slot, the next setup still requires a completely fresh sweep and structure sequence; candidates are never simultaneous.
+- **Allow replacement after candidate invalidation** returns the slot only when a candidate fails before producing a signal. With the default off, an invalidated candidate still consumes its slot. With maximum 1 and replacement on, a later valid candidate may replace a failed first attempt, but only one completed signal can be produced in that window.
 - Checkboxes independently control HTF1 OB/FVG interaction, H1/H4 alignment, displacement FVG, engulfing and rejection. If both confirmation-candle checkboxes are off while Confirmation entry is selected, no confirmation signal can qualify.
 - BUY/SELL markers and entry/SL/TP line colours are customizable. Plans remain drawings only. A later level touch updates the caption; if SL and TP occur inside the same chart candle, the result is reported as both touched rather than guessed.
 
@@ -34,7 +40,7 @@ Under **05 | Session entry candidates (optional)**:
 3. Search for the nearest opposing-colour candle from the sweep candle through the candle before the break, bounded by the existing OB lookback. Use the selected full-candle/body bounds. The break must close beyond that zone. If no qualifying candle exists, no box appears. FVG selection is NOT part of this first candidate layer.
 4. The box starts at the confirming candle's closing timestamp, never retrospectively at the sweep/source candle. It says **LDN/NY possible buy/sell**. A later overlap makes its border dashed; that touch alone is NOT entry confirmation.
 
-The first close through the frozen trigger consumes the pending setup even if displacement/zone checks fail. Pending setups expire after the configurable bar limit, at window end, on buffered sweep invalidation or loss of the chosen HTF alignment. A fresh later sweep can arm another attempt until a candidate is produced. Once a candidate is produced, there is at most one per opening window; it is not replaced after invalidation.
+The first close through the frozen trigger consumes the pending setup even if displacement/zone checks fail. Pending setups expire after the configurable bar limit, at window end, on buffered sweep invalidation or loss of the chosen HTF alignment. A fresh later sweep can arm another attempt while capacity remains. Candidate slots and replacement after invalidation follow the v1.3 controls above.
 
 An existing candidate is removed at window end, on a wick touching buffered sweep invalidation, a close through the zone's far edge, or loss of required HTF alignment. Candidate extension is capped at window end. No candidate is created at the last bar's closing boundary because there is no remaining in-window retracement time. This lifecycle is separate from ordinary OB/FVG removal settings. Disabling the feature removes its candidate. When a candidate forms over an identical ordinary OB, that ordinary OB is removed to avoid duplicate captions; it is not restored when the candidate later expires.
 

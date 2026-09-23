@@ -58,7 +58,26 @@ def zone_result(direction, top, bottom, op, high, low, close, mode, expired=Fals
     return remove, event
 
 
+def candidate_slot_result(existing_slots, maximum, invalidated=False, replacement=False):
+    """Independent model of the per-window candidate-slot rule."""
+    used = existing_slots + 1
+    if invalidated and replacement:
+        used = max(0, used - 1)
+    return used, used < maximum
+
+
 class Rules(unittest.TestCase):
+    def test_default_candidate_consumes_only_slot(self):
+        self.assertEqual(candidate_slot_result(0, 1), (1, False))
+
+    def test_invalid_candidate_can_return_slot_when_enabled(self):
+        self.assertEqual(candidate_slot_result(0, 1, invalidated=True, replacement=True), (0, True))
+
+    def test_multiple_slots_remain_sequentially_available(self):
+        self.assertEqual(candidate_slot_result(0, 3), (1, True))
+        self.assertEqual(candidate_slot_result(1, 3), (2, True))
+        self.assertEqual(candidate_slot_result(2, 3), (3, False))
+
     def test_initial_break_is_not_choch(self):
         s = Structure(100, 90)
         self.assertEqual(s.step(102, 98, 101)[:2], (1, False))
@@ -128,7 +147,7 @@ class Rules(unittest.TestCase):
 
 class SourceGuards(unittest.TestCase):
     def test_separate_indicator_no_trading_dashboard_or_orb_dependency(self):
-        self.assertIn('indicator("SMC Context Companion v1.2"', SOURCE)
+        self.assertIn('indicator("SMC Context Companion v1.3"', SOURCE)
         for token in ("strategy(", "strategy.entry", "strategy.exit", "table.new", "import ", "scale.none"):
             self.assertNotIn(token, SOURCE)
 
@@ -166,6 +185,8 @@ class SourceGuards(unittest.TestCase):
 
     def test_filtered_signal_layer_is_bounded_and_configurable(self):
         for token in (
+            'input.int(1, "Maximum setups per opening window", minval = 1, maxval = 3',
+            'input.bool(false, "Allow replacement after candidate invalidation"',
             'input.string("Confirmation entry", "Entry model"',
             'input.bool(true, "Require HTF 1 order block or FVG interaction"',
             'input.bool(true, "Require displacement to leave an entry FVG"',
@@ -176,7 +197,10 @@ class SourceGuards(unittest.TestCase):
             'alertcondition(smcSellSignal, "SMC qualified SELL"',
         ):
             self.assertIn(token, SOURCE)
-        self.assertIn('openingUsed := true', SOURCE)
+        self.assertIn('windowSetupCount += 1', SOURCE)
+        self.assertIn('windowSetupCount < maxSetupsPerWindow', SOURCE)
+        self.assertIn('windowSetupCount := math.max(0, windowSetupCount - 1)', SOURCE)
+        self.assertNotIn('openingUsed', SOURCE)
 
     def test_backtest_orb_sources_untouched(self):
         expected = {

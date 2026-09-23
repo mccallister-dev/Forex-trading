@@ -1,5 +1,5 @@
 //@version=6
-indicator("SMC Context Companion v1.2", shorttitle = "SMC Sessions", overlay = true, max_bars_back = 1000, max_lines_count = 150, max_labels_count = 150, max_boxes_count = 40)
+indicator("SMC Context Companion v1.3", shorttitle = "SMC Sessions", overlay = true, max_bars_back = 1000, max_lines_count = 150, max_labels_count = 150, max_boxes_count = 40)
 // Independent context indicator. No ORB logic, orders, dashboard or performance claims.
 // Original mechanical definitions; not a reproduction of a creator's trading method.
 // Confirmed pivots are used only AFTER their right-hand bars have completed.
@@ -69,6 +69,8 @@ float candidateBuffer = input.float(0.1, "Sweep invalidation buffer (ATR)", minv
 
 const string GQ = "06 | SMC buy/sell signals"
 bool showSmcSignals = input.bool(true, "Show confirmed SMC BUY / SELL signals", group = GQ)
+int maxSetupsPerWindow = input.int(1, "Maximum setups per opening window", minval = 1, maxval = 3, group = GQ, tooltip = "Maximum qualified candidate slots in each configured London or New York opening window. Only one candidate can be active at a time. Default 1 preserves the original clean-chart behaviour.")
+bool allowReplacementAfterInvalidation = input.bool(false, "Allow replacement after candidate invalidation", group = GQ, tooltip = "When enabled, a candidate invalidated before producing a signal returns its slot, allowing a later fresh sweep and structure sequence in the same opening window. Completed signals always consume a slot.")
 string smcEntryModel = input.string("Confirmation entry", "Entry model", options = ["Risk entry", "Confirmation entry"], group = GQ, tooltip = "Risk entry plans a limit at the new displacement FVG as soon as the shift is confirmed. Confirmation entry waits for a later engulfing or rejection candle after price returns to the entry zone.")
 string riskPlacement = input.string("FVG 50%", "Risk-entry placement", options = ["FVG open boundary", "FVG 50%"], group = GQ)
 bool requireHtfPoi = input.bool(true, "Require HTF 1 order block or FVG interaction", group = GQ, tooltip = "HTF 1 defaults to H1. This uses objective proxy zones derived from confirmed HTF candles; it is not a claim to reproduce any proprietary SMC implementation.")
@@ -122,7 +124,7 @@ var float candidateEntryTop = na
 var float candidateEntryBottom = na
 var bool candidatePoiOk = false
 var bool candidateTouched = false
-var bool openingUsed = false
+var int windowSetupCount = 0
 bool smcBuySignal = false
 bool smcSellSignal = false
 float smcSignalEntry = na
@@ -416,8 +418,8 @@ if barstate.isconfirmed
         if high < low[2] and low[2] - high >= minGap and bearDisplacement[1]
             f_addZone(low[2], high, -1, "FVG", dayNumber)
 
-    // Session signal engine: one candidate and at most one signal per opening
-    // window. It follows sweep -> displaced structure shift -> FVG/OB entry zone.
+    // Session signal engine: one active candidate at a time, within the selected
+    // per-window slot limit. Sweep -> displaced shift -> FVG/OB entry zone.
     bool runEntryEngine = showCandidates or showSmcSignals
     if openingChanged or openingId == 0 or not runEntryEngine
         pendingDir := 0
@@ -428,8 +430,9 @@ if barstate.isconfirmed
         candidateEntryTop := na
         candidateEntryBottom := na
         candidatePoiOk := false
-        openingUsed := false
+        windowSetupCount := 0
     if runEntryEngine and openingId != 0
+        bool candidateClosedThisBar = false
         if candidateDir != 0
             bool stopHit = candidateDir == 1 ? low <= candidateStop : high >= candidateStop
             bool zoneFailed = candidateDir == 1 ? close < candidateBottom : close > candidateTop
@@ -442,9 +445,12 @@ if barstate.isconfirmed
             bool confirmationCandle = candidateDir == 1 ? (acceptEngulfing and bullishEngulf) or (acceptRejection and bullishReject) : (acceptEngulfing and bearishEngulf) or (acceptRejection and bearishReject)
             bool confirmationReady = showSmcSignals and smcEntryModel == "Confirmation entry" and zoneTouchedNow and confirmationCandle and candidatePoiOk and (not requireSignalAlignment or alignment == candidateDir)
             if stopHit or zoneFailed or not f_candidateAligned(candidateDir)
+                if allowReplacementAfterInvalidation
+                    windowSetupCount := math.max(0, windowSetupCount - 1)
                 box.delete(candidateBox)
                 candidateBox := na
                 candidateDir := 0
+                candidateClosedThisBar := true
             else if confirmationReady
                 float plannedEntry = close
                 float riskDistance = candidateDir * (plannedEntry - candidateStop)
@@ -455,9 +461,12 @@ if barstate.isconfirmed
                     smcSignalStop := candidateStop
                     smcSignalTarget := math.round_to_mintick(plannedEntry + candidateDir * riskDistance * smcRewardRisk)
                     smcSignalModel := "Confirmation"
+                else if allowReplacementAfterInvalidation
+                    windowSetupCount := math.max(0, windowSetupCount - 1)
                 box.delete(candidateBox)
                 candidateBox := na
                 candidateDir := 0
+                candidateClosedThisBar := true
             else
                 candidateTouched := candidateTouched or zoneTouchedNow
                 if showCandidates and not na(candidateBox)
@@ -504,7 +513,7 @@ if barstate.isconfirmed
                                 candidateEntryBottom := entryBottom
                                 candidatePoiOk := pendingPoiOk
                                 candidateTouched := false
-                                openingUsed := true
+                                windowSetupCount += 1
                                 if showSmcSignals and smcEntryModel == "Risk entry"
                                     float plannedEntry = riskPlacement == "FVG 50%" ? math.avg(entryTop, entryBottom) : pendingDir == 1 ? entryTop : entryBottom
                                     float riskDistance = pendingDir * (plannedEntry - candidateStop)
@@ -515,12 +524,18 @@ if barstate.isconfirmed
                                         smcSignalStop := candidateStop
                                         smcSignalTarget := math.round_to_mintick(plannedEntry + pendingDir * riskDistance * smcRewardRisk)
                                         smcSignalModel := riskPlacement
+                                    else if allowReplacementAfterInvalidation
+                                        windowSetupCount := math.max(0, windowSetupCount - 1)
+                                    box.delete(candidateBox)
+                                    candidateBox := na
+                                    candidateDir := 0
+                                    candidateClosedThisBar := true
                             break
                 pendingDir := 0
                 pendingPoiOk := false
         // A two-sided sweep is ambiguous. HTF POI and alignment are evaluated
         // at the sweep so a later break cannot retroactively qualify it.
-        if not openingUsed and candidateDir == 0 and pendingDir == 0 and lowSweep != highSweep
+        if windowSetupCount < maxSetupsPerWindow and candidateDir == 0 and pendingDir == 0 and not candidateClosedThisBar and not (smcBuySignal or smcSellSignal) and lowSweep != highSweep
             int dir = lowSweep ? 1 : -1
             bool triggerAvailable = dir == 1 ? highLive and not highUsed : lowLive and not lowUsed
             bool poiPass = not requireHtfPoi or (dir == 1 ? inBullHtfPoi : inBearHtfPoi)

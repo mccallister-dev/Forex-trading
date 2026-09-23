@@ -42,14 +42,15 @@ class SessionRules(unittest.TestCase):
         self.assertEqual(trigger(1, 102, 100, 5, 4, True, False), (True, False))
 
     def test_pine_guards_and_independence(self):
-        for rule in ['lowSweep != highSweep', 'bar_index > sweepBar', 'bar_index - j >= sweepBar', 'time_close < openingEnd', 'xloc = xloc.bar_time', 'not openingUsed', 'frozenTrigger := dir == 1 ? swingHigh : swingLow', 'time_close <= finish']:
+        for rule in ['lowSweep != highSweep', 'bar_index > sweepBar', 'bar_index - j >= sweepBar', 'time_close < openingEnd', 'xloc = xloc.bar_time', 'windowSetupCount < maxSetupsPerWindow', 'candidateDir == 0', 'frozenTrigger := dir == 1 ? swingHigh : swingLow', 'time_close <= finish']:
             self.assertIn(rule, SOURCE)
         self.assertEqual(SOURCE.count('candidateBox := box.new('), 1)
-        block = SOURCE[SOURCE.index('// Independent session candidate layer.'):SOURCE.index('// Admit pivots LAST:')]
+        block = SOURCE[SOURCE.index('// Session signal engine:'):SOURCE.index('// Admit pivots LAST:')]
         self.assertNotIn('showOb', block)
         self.assertNotIn('showFvg', block)
         self.assertIn('box.delete(candidateBox)', block)
-        self.assertIn('openingUsed := true', block)
+        self.assertIn('windowSetupCount += 1', block)
+        self.assertNotIn('openingUsed', block)
 
 if __name__ == '__main__':
     unittest.main()
