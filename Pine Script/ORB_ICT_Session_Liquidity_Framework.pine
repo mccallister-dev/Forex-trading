@@ -1,0 +1,853 @@
+//@version=6
+indicator(
+    "ORB + ICT Session Liquidity Framework",
+    overlay = true,
+    max_lines_count = 500,
+    max_labels_count = 500,
+    max_boxes_count = 300
+)
+
+// Clean session and opening-range observation framework.
+// Permanent state changes and markers are confirmed-bar only by design.
+
+const string G_GENERAL = "General"
+const string G_SESSIONS = "Sessions"
+const string G_ORB = "Opening Range"
+const string G_VALIDATION = "Validation"
+const string G_ADVANCED = "Advanced"
+
+const int ORB_UPCOMING = 0
+const int ORB_FORMING = 1
+const int ORB_CLOSED = 2
+const int ORB_BREAK = 3
+const int ORB_RETEST = 4
+const int ORB_CONFIRMED = 5
+
+const int ST_IDLE = 0
+const int ST_SWEPT = 1
+const int ST_REVERSED = 2
+const int ST_BROKEN = 3
+const int ST_RETEST = 4
+const int ST_CONFIRMED = 5
+const int ST_INVALID = 6
+
+const int MAX_GENERIC_LINES = 180
+const int MAX_GENERIC_LABELS = 140
+const int MAX_GENERIC_BOXES = 90
+const int SETUP_MAX_SCORE = 16
+
+//=============================================================================
+// 1. Inputs - exactly 40 public controls
+//=============================================================================
+
+string displayMode = input.string("Minimal", "Display mode", options = ["Minimal", "Standard", "Analysis", "Custom"], group = G_GENERAL, tooltip = "Minimal shows clean session and ORB structure. Analysis and Custom permit optional technical layers.")
+int tradingDays = input.int(3, "Trading days to display", minval = 1, maxval = 10, group = G_GENERAL, tooltip = "Counts days that contain chart bars, not calendar-day gaps or an object multiplier.")
+string displayTimezone = input.string("Africa/Johannesburg", "Display timezone", options = ["Exchange", "UTC", "Europe/London", "America/New_York", "Africa/Johannesburg", "Asia/Tokyo", "Australia/Sydney"], group = G_GENERAL)
+bool showDashboard = input.bool(true, "Show dashboard", group = G_GENERAL)
+string dashboardPosition = input.string("Top right", "Dashboard position", options = ["Top left", "Top right", "Bottom left", "Bottom right"], group = G_GENERAL)
+string preferredSessionMode = input.string("Auto", "Preferred session mode", options = ["Auto", "Manual"], group = G_GENERAL)
+string manualPreferredSession = input.string("London", "Manual preferred session", options = ["Asian", "London", "New York"], group = G_GENERAL)
+
+bool showSessionBoxes = input.bool(true, "Show session boxes", group = G_SESSIONS)
+bool asianEnabled = input.bool(true, "Enable Asian", inline = "asia", group = G_SESSIONS)
+string asianSession = input.session("0000-0800:1234567", "Time", inline = "asia", group = G_SESSIONS)
+string asianTimezone = input.string("Europe/London", "Asian timezone", options = ["Exchange", "UTC", "Europe/London", "America/New_York", "Africa/Johannesburg", "Asia/Tokyo", "Australia/Sydney"], group = G_SESSIONS)
+color asianBoxColor = input.color(color.new(color.rgb(65, 105, 225), 89), "Asian box colour / transparency", group = G_SESSIONS)
+bool londonEnabled = input.bool(true, "Enable London", inline = "london", group = G_SESSIONS)
+string londonSession = input.session("0800-1600:1234567", "Time", inline = "london", group = G_SESSIONS)
+string londonTimezone = input.string("Europe/London", "London timezone", options = ["Exchange", "UTC", "Europe/London", "America/New_York", "Africa/Johannesburg", "Asia/Tokyo", "Australia/Sydney"], group = G_SESSIONS)
+color londonBoxColor = input.color(color.new(color.rgb(0, 150, 136), 89), "London box colour / transparency", group = G_SESSIONS)
+bool newYorkEnabled = input.bool(true, "Enable New York", inline = "newyork", group = G_SESSIONS)
+string newYorkSession = input.session("0800-1700:1234567", "Time", inline = "newyork", group = G_SESSIONS)
+string newYorkTimezone = input.string("America/New_York", "New York timezone", options = ["Exchange", "UTC", "Europe/London", "America/New_York", "Africa/Johannesburg", "Asia/Tokyo", "Australia/Sydney"], group = G_SESSIONS)
+color newYorkBoxColor = input.color(color.new(color.rgb(244, 140, 45), 89), "New York box colour / transparency", group = G_SESSIONS)
+
+string orbSessionChoice = input.string("Auto", "ORB session", options = ["Auto", "Asian", "London", "New York"], group = G_ORB)
+string orbDurationChoice = input.string("30", "ORB duration (minutes)", options = ["5", "15", "30", "60", "Custom"], group = G_ORB)
+int orbCustomMinutes = input.int(20, "Custom ORB minutes", minval = 1, maxval = 240, group = G_ORB)
+bool showOrbBox = input.bool(true, "Show ORB box", group = G_ORB)
+bool showOrbMidpoint = input.bool(false, "Show ORB midpoint", group = G_ORB)
+bool showOrbClosedMarker = input.bool(true, "Show ORB-closed marker", group = G_ORB)
+
+string validationMode = input.string("Standard", "Validation mode", options = ["Standard", "Strict"], group = G_VALIDATION)
+bool confirmedBarsOnly = input.bool(true, "Confirmed bars only", group = G_VALIDATION, tooltip = "Permanent states always require confirmed bars. Turning this off permits only the optional provisional last-bar label.")
+bool showConfirmedSetupMarkers = input.bool(true, "Show confirmed setup markers", group = G_VALIDATION)
+bool showDevelopingLabels = input.bool(false, "Show developing labels", group = G_VALIDATION)
+
+bool showImbalances = input.bool(false, "Show Imbalances (FVG)", group = G_ADVANCED)
+bool showLiquidity = input.bool(false, "Show Equal highs/lows liquidity", group = G_ADVANCED)
+bool showPreviousLevels = input.bool(false, "Show previous-day/week levels", group = G_ADVANCED)
+int maxVisibleZones = input.int(2, "Maximum visible zones", minval = 1, maxval = 8, group = G_ADVANCED)
+bool alertsEnabled = input.bool(true, "Enable observation alerts", group = G_ADVANCED)
+int minimumBreakTicks = input.int(1, "Minimum ORB break distance (ticks)", minval = 0, maxval = 100, group = G_ADVANCED)
+bool alignBreakWithBias = input.bool(false, "Align ORB break with net bias", group = G_ADVANCED)
+bool customSessionEnabled = input.bool(false, "Enable custom session", inline = "custom", group = G_ADVANCED)
+string customSession = input.session("0600-1000:1234567", "Time", inline = "custom", group = G_ADVANCED)
+string customTimezone = input.string("Exchange", "Custom session timezone", options = ["Exchange", "UTC", "Europe/London", "America/New_York", "Africa/Johannesburg", "Asia/Tokyo", "Australia/Sydney"], group = G_ADVANCED)
+
+//=============================================================================
+// 2. Helpers and retained-object registries
+//=============================================================================
+
+f_timezone(string choice) =>
+    choice == "Exchange" ? syminfo.timezone : choice
+
+f_position(string choice) =>
+    choice == "Top left" ? position.top_left : choice == "Bottom left" ? position.bottom_left : choice == "Bottom right" ? position.bottom_right : position.top_right
+
+f_durationMinutes() =>
+    orbDurationChoice == "Custom" ? orbCustomMinutes : int(str.tonumber(orbDurationChoice))
+
+f_dayKey(int sourceTime) =>
+    string zone = f_timezone(displayTimezone)
+    int(str.tonumber(str.format_time(sourceTime, "yyyyMMdd", zone)))
+
+f_signed(int value) =>
+    value > 0 ? "+" + str.tostring(value) : str.tostring(value)
+
+f_biasClass(int net) =>
+    net >= 5 ? "Strong Bullish" : net >= 2 ? "Bullish" : net <= -5 ? "Strong Bearish" : net <= -2 ? "Bearish" : "Neutral"
+
+f_quality(int score) =>
+    score >= 11 ? "High" : score >= 8 ? "Good" : score >= 5 ? "Developing" : "Low"
+
+f_setupStage(int state) =>
+    state == ST_IDLE ? "Sweep pending" : state == ST_SWEPT ? "Reclaim / reversal pending" : state == ST_REVERSED ? "ORB break pending" : state == ST_BROKEN ? "Retest / rejection pending" : state == ST_RETEST ? "Continuation pending" : state == ST_CONFIRMED ? "Confirmed" : "Invalidated"
+
+f_progress(int state) =>
+    state == ST_SWEPT ? 1 : state == ST_REVERSED ? 2 : state == ST_BROKEN ? 3 : state == ST_RETEST ? 4 : state == ST_CONFIRMED ? 5 : 0
+
+f_orbStateText(int state) =>
+    state == ORB_FORMING ? "Forming" : state == ORB_CLOSED ? "Closed" : state == ORB_BREAK ? "Break observed" : state == ORB_RETEST ? "Retest" : state == ORB_CONFIRMED ? "Confirmed" : "Upcoming"
+
+f_autoPreferred() =>
+    string normalized = str.upper(syminfo.root + " " + syminfo.ticker)
+    bool europe = str.contains(normalized, "EUR") or str.contains(normalized, "GBP") or str.contains(normalized, "CHF")
+    bool asiaPacific = str.contains(normalized, "JPY") or str.contains(normalized, "AUD") or str.contains(normalized, "NZD")
+    syminfo.type == "crypto" ? "Asian" : syminfo.type == "forex" and europe ? "London" : syminfo.type == "forex" and asiaPacific ? "Asian" : "New York"
+
+f_strongMove(int direction, float atrValue) =>
+    float candleRange = high - low
+    float candleBody = math.abs(close - open)
+    float bodyAtrMinimum = validationMode == "Strict" ? 1.0 : 0.75
+    float bodyPercentMinimum = validationMode == "Strict" ? 60.0 : 50.0
+    bool directionPass = direction == 1 ? close > open : close < open
+    bool bodyPass = not na(atrValue) and candleBody >= atrValue * bodyAtrMinimum
+    bool bodyPercentPass = candleRange > 0 and candleBody / candleRange * 100 >= bodyPercentMinimum
+    bool closeNearPass = candleRange > 0 and (direction == 1 ? high - close <= candleRange * 0.25 : close - low <= candleRange * 0.25)
+    directionPass and bodyPass and bodyPercentPass and closeNearPass
+
+var array<int> retainedDayKeys = array.new<int>()
+var array<line> retainedLines = array.new<line>()
+var array<int> retainedLineDays = array.new<int>()
+var array<label> retainedLabels = array.new<label>()
+var array<int> retainedLabelDays = array.new<int>()
+var array<box> retainedBoxes = array.new<box>()
+var array<int> retainedBoxDays = array.new<int>()
+
+f_registerLine(line id, int key) =>
+    array.push(retainedLines, id)
+    array.push(retainedLineDays, key)
+    while array.size(retainedLines) > MAX_GENERIC_LINES
+        line.delete(array.shift(retainedLines))
+        array.shift(retainedLineDays)
+
+f_registerLabel(label id, int key) =>
+    array.push(retainedLabels, id)
+    array.push(retainedLabelDays, key)
+    while array.size(retainedLabels) > MAX_GENERIC_LABELS
+        label.delete(array.shift(retainedLabels))
+        array.shift(retainedLabelDays)
+
+f_registerBox(box id, int key) =>
+    array.push(retainedBoxes, id)
+    array.push(retainedBoxDays, key)
+    while array.size(retainedBoxes) > MAX_GENERIC_BOXES
+        box.delete(array.shift(retainedBoxes))
+        array.shift(retainedBoxDays)
+
+f_deleteGenericDay(int expiredDay) =>
+    int lineIndex = array.size(retainedLines) - 1
+    while lineIndex >= 0
+        if array.get(retainedLineDays, lineIndex) == expiredDay
+            line.delete(array.get(retainedLines, lineIndex))
+            array.remove(retainedLines, lineIndex)
+            array.remove(retainedLineDays, lineIndex)
+        lineIndex -= 1
+    int labelIndex = array.size(retainedLabels) - 1
+    while labelIndex >= 0
+        if array.get(retainedLabelDays, labelIndex) == expiredDay
+            label.delete(array.get(retainedLabels, labelIndex))
+            array.remove(retainedLabels, labelIndex)
+            array.remove(retainedLabelDays, labelIndex)
+        labelIndex -= 1
+    int boxIndex = array.size(retainedBoxes) - 1
+    while boxIndex >= 0
+        if array.get(retainedBoxDays, boxIndex) == expiredDay
+            box.delete(array.get(retainedBoxes, boxIndex))
+            array.remove(retainedBoxes, boxIndex)
+            array.remove(retainedBoxDays, boxIndex)
+        boxIndex -= 1
+
+var array<box> imbalanceBoxes = array.new<box>()
+var array<float> imbalanceTops = array.new<float>()
+var array<float> imbalanceBottoms = array.new<float>()
+var array<int> imbalanceDirections = array.new<int>()
+var array<int> imbalanceDays = array.new<int>()
+
+f_trimImbalances(int limit) =>
+    while array.size(imbalanceBoxes) > limit
+        box.delete(array.shift(imbalanceBoxes))
+        array.shift(imbalanceTops)
+        array.shift(imbalanceBottoms)
+        array.shift(imbalanceDirections)
+        array.shift(imbalanceDays)
+
+f_deleteImbalanceDay(int expiredDay) =>
+    int index = array.size(imbalanceBoxes) - 1
+    while index >= 0
+        if array.get(imbalanceDays, index) == expiredDay
+            box.delete(array.get(imbalanceBoxes, index))
+            array.remove(imbalanceBoxes, index)
+            array.remove(imbalanceTops, index)
+            array.remove(imbalanceBottoms, index)
+            array.remove(imbalanceDirections, index)
+            array.remove(imbalanceDays, index)
+        index -= 1
+
+var array<line> liquidityLines = array.new<line>()
+var array<label> liquidityLabels = array.new<label>()
+var array<float> liquidityValues = array.new<float>()
+var array<int> liquidityDirections = array.new<int>()
+var array<bool> liquiditySwept = array.new<bool>()
+var array<int> liquidityDays = array.new<int>()
+
+f_trimLiquidity(int limit) =>
+    while array.size(liquidityLines) > limit
+        line.delete(array.shift(liquidityLines))
+        label.delete(array.shift(liquidityLabels))
+        array.shift(liquidityValues)
+        array.shift(liquidityDirections)
+        array.shift(liquiditySwept)
+        array.shift(liquidityDays)
+
+f_deleteLiquidityDay(int expiredDay) =>
+    int index = array.size(liquidityLines) - 1
+    while index >= 0
+        if array.get(liquidityDays, index) == expiredDay
+            line.delete(array.get(liquidityLines, index))
+            label.delete(array.get(liquidityLabels, index))
+            array.remove(liquidityLines, index)
+            array.remove(liquidityLabels, index)
+            array.remove(liquidityValues, index)
+            array.remove(liquidityDirections, index)
+            array.remove(liquiditySwept, index)
+            array.remove(liquidityDays, index)
+        index -= 1
+
+int dayKey = f_dayKey(time)
+bool newTradingDay = barstate.isfirst or dayKey != dayKey[1]
+if newTradingDay
+    array.push(retainedDayKeys, dayKey)
+    while array.size(retainedDayKeys) > tradingDays
+        int expiredDay = array.shift(retainedDayKeys)
+        f_deleteGenericDay(expiredDay)
+        f_deleteImbalanceDay(expiredDay)
+        f_deleteLiquidityDay(expiredDay)
+
+float chartAtr = ta.atr(14)
+bool minimalMode = displayMode == "Minimal"
+bool technicalMode = displayMode == "Analysis" or displayMode == "Custom"
+bool drawImbalances = technicalMode and showImbalances
+bool drawLiquidity = technicalMode and showLiquidity
+bool drawPreviousLevels = technicalMode and showPreviousLevels
+
+//=============================================================================
+// 3. Sessions - boxes only, with one compact name label
+//=============================================================================
+
+f_trackSession(bool enabled, string sessionSpec, string zoneChoice, string name, color baseColor, float labelOffset) =>
+    string zone = f_timezone(zoneChoice)
+    bool active = enabled and not na(time(timeframe.period, sessionSpec, zone))
+    bool starts = active and (barstate.isfirst or not active[1])
+    bool ends = not active and not barstate.isfirst and active[1]
+    var float sessionHigh = na
+    var float sessionLow = na
+    var int sessionDay = na
+    var box sessionBox = na
+    var label sessionLabel = na
+    if starts
+        sessionHigh := high
+        sessionLow := low
+        sessionDay := dayKey
+        if showSessionBoxes
+            color fillColor = minimalMode ? color.new(baseColor, 95) : baseColor
+            color borderColor = color.new(baseColor, minimalMode ? 35 : 20)
+            sessionBox := box.new(time, sessionHigh, time_close, sessionLow, xloc = xloc.bar_time, bgcolor = fillColor, border_color = borderColor, border_width = 1)
+            f_registerBox(sessionBox, sessionDay)
+            sessionLabel := label.new(time, sessionHigh + nz(chartAtr, high - low) * labelOffset, name, xloc = xloc.bar_time, style = label.style_none, textcolor = chart.fg_color, size = size.tiny)
+            f_registerLabel(sessionLabel, sessionDay)
+    else if active
+        sessionHigh := math.max(sessionHigh, high)
+        sessionLow := math.min(sessionLow, low)
+    if active and showSessionBoxes
+        if not na(sessionBox)
+            box.set_right(sessionBox, time_close)
+            box.set_top(sessionBox, sessionHigh)
+            box.set_bottom(sessionBox, sessionLow)
+        if not na(sessionLabel)
+            label.set_xy(sessionLabel, time, sessionHigh + nz(chartAtr, high - low) * labelOffset)
+    [sessionHigh, sessionLow, active, starts, ends]
+
+[asianHigh, asianLow, inAsian, asianStarts, asianEnds] = f_trackSession(asianEnabled, asianSession, asianTimezone, "Asian", asianBoxColor, 0.05)
+[londonHigh, londonLow, inLondon, londonStarts, londonEnds] = f_trackSession(londonEnabled, londonSession, londonTimezone, "London", londonBoxColor, 0.11)
+[newYorkHigh, newYorkLow, inNewYork, newYorkStarts, newYorkEnds] = f_trackSession(newYorkEnabled, newYorkSession, newYorkTimezone, "New York", newYorkBoxColor, 0.17)
+[customHigh, customLow, inCustom, customStarts, customEnds] = f_trackSession(customSessionEnabled, customSession, customTimezone, "Custom", color.new(color.rgb(145, 80, 190), 90), 0.23)
+
+//=============================================================================
+// 4. Completed higher-timeframe data and optional key levels
+//=============================================================================
+
+[previousDayHigh, previousDayLow, currentDailyOpen] = request.security(syminfo.tickerid, "1D", [high[1], low[1], open], lookahead = barmerge.lookahead_on)
+[previousWeekHigh, previousWeekLow] = request.security(syminfo.tickerid, "1W", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[oneHourClose, oneHourEma] = request.security(syminfo.tickerid, "60", [close[1], ta.ema(close, 50)[1]], lookahead = barmerge.lookahead_on)
+[fourHourClose, fourHourEma] = request.security(syminfo.tickerid, "240", [close[1], ta.ema(close, 50)[1]], lookahead = barmerge.lookahead_on)
+
+var line pdhLine = na
+var line pdlLine = na
+var line pwhLine = na
+var line pwlLine = na
+if newTradingDay and drawPreviousLevels
+    pdhLine := line.new(time, previousDayHigh, time_close, previousDayHigh, xloc = xloc.bar_time, color = color.new(color.orange, 20), style = line.style_dashed)
+    pdlLine := line.new(time, previousDayLow, time_close, previousDayLow, xloc = xloc.bar_time, color = color.new(color.orange, 20), style = line.style_dashed)
+    pwhLine := line.new(time, previousWeekHigh, time_close, previousWeekHigh, xloc = xloc.bar_time, color = color.new(color.purple, 25), style = line.style_dotted)
+    pwlLine := line.new(time, previousWeekLow, time_close, previousWeekLow, xloc = xloc.bar_time, color = color.new(color.purple, 25), style = line.style_dotted)
+    f_registerLine(pdhLine, dayKey)
+    f_registerLine(pdlLine, dayKey)
+    f_registerLine(pwhLine, dayKey)
+    f_registerLine(pwlLine, dayKey)
+if drawPreviousLevels and not na(pdhLine)
+    line.set_x2(pdhLine, time_close)
+    line.set_x2(pdlLine, time_close)
+    line.set_x2(pwhLine, time_close)
+    line.set_x2(pwlLine, time_close)
+
+//=============================================================================
+// 5. Preferred-session mapping and selected ORB lifecycle
+//=============================================================================
+
+string autoPreferred = f_autoPreferred()
+string preferredSession = preferredSessionMode == "Manual" ? manualPreferredSession : autoPreferred
+string requestedOrbSession = orbSessionChoice == "Auto" ? preferredSession : orbSessionChoice
+string selectedOrbSession = requestedOrbSession == "Asian" and asianEnabled ? "Asian" : requestedOrbSession == "London" and londonEnabled ? "London" : requestedOrbSession == "New York" and newYorkEnabled ? "New York" : londonEnabled ? "London" : newYorkEnabled ? "New York" : "Asian"
+bool selectedSessionEnabled = selectedOrbSession == "Asian" ? asianEnabled : selectedOrbSession == "London" ? londonEnabled : newYorkEnabled
+bool selectedSessionActive = selectedOrbSession == "Asian" ? inAsian : selectedOrbSession == "London" ? inLondon : inNewYork
+bool selectedSessionStarts = selectedOrbSession == "Asian" ? asianStarts : selectedOrbSession == "London" ? londonStarts : newYorkStarts
+bool selectedSessionEnds = selectedOrbSession == "Asian" ? asianEnds : selectedOrbSession == "London" ? londonEnds : newYorkEnds
+color selectedSessionColor = selectedOrbSession == "Asian" ? asianBoxColor : selectedOrbSession == "London" ? londonBoxColor : newYorkBoxColor
+
+var float orbHigh = na
+var float orbLow = na
+var int orbStartTime = na
+var int orbEndTime = na
+var int orbDay = na
+var int orbCloseBar = na
+var bool orbFrozen = false
+var bool orbCloseMarkerPrinted = false
+var box orbBox = na
+var line orbHighLine = na
+var line orbLowLine = na
+var line orbMidLine = na
+var int orbLifecycle = ORB_UPCOMING
+var int orbBreakDirection = 0
+var int orbBreakBar = na
+var int orbRetestBar = na
+var float orbRetestHigh = na
+var float orbRetestLow = na
+
+bool orbClosedEvent = false
+bool orbBreakEvent = false
+bool orbRetestEvent = false
+bool orbLifecycleConfirmedEvent = false
+
+if selectedSessionStarts and selectedSessionEnabled
+    orbHigh := high
+    orbLow := low
+    orbStartTime := time
+    orbEndTime := time + f_durationMinutes() * 60000
+    orbDay := dayKey
+    orbCloseBar := na
+    orbFrozen := false
+    orbCloseMarkerPrinted := false
+    orbLifecycle := ORB_FORMING
+    orbBreakDirection := 0
+    orbBreakBar := na
+    orbRetestBar := na
+    orbRetestHigh := na
+    orbRetestLow := na
+    if showOrbBox
+        orbBox := box.new(orbStartTime, orbHigh, time_close, orbLow, xloc = xloc.bar_time, bgcolor = color.new(selectedSessionColor, minimalMode ? 93 : 86), border_color = color.new(selectedSessionColor, 15), border_width = 1)
+        f_registerBox(orbBox, orbDay)
+    if showOrbMidpoint
+        orbMidLine := line.new(orbStartTime, math.avg(orbHigh, orbLow), time_close, math.avg(orbHigh, orbLow), xloc = xloc.bar_time, color = color.new(selectedSessionColor, 30), style = line.style_dotted)
+        f_registerLine(orbMidLine, orbDay)
+
+bool orbConstituentBar = selectedSessionEnabled and selectedSessionActive and not na(orbStartTime) and time < orbEndTime and not orbFrozen
+if orbConstituentBar
+    orbHigh := math.max(orbHigh, high)
+    orbLow := math.min(orbLow, low)
+    if not na(orbBox)
+        box.set_right(orbBox, math.min(time_close, orbEndTime))
+        box.set_top(orbBox, orbHigh)
+        box.set_bottom(orbBox, orbLow)
+    if not na(orbMidLine)
+        line.set_xy2(orbMidLine, math.min(time_close, orbEndTime), math.avg(orbHigh, orbLow))
+        line.set_y1(orbMidLine, math.avg(orbHigh, orbLow))
+
+bool constituentCompletesOrb = orbConstituentBar and time_close >= orbEndTime
+bool sessionEndedEarly = selectedSessionEnds and not orbFrozen and not na(orbStartTime)
+if barstate.isconfirmed and not orbFrozen and (constituentCompletesOrb or sessionEndedEarly)
+    orbFrozen := true
+    orbClosedEvent := true
+    orbLifecycle := ORB_CLOSED
+    orbCloseBar := constituentCompletesOrb ? bar_index : bar_index - 1
+    int closeMarkerTime = constituentCompletesOrb ? time : time[1]
+    float closeMarkerPrice = constituentCompletesOrb ? high : high[1]
+    if not na(orbBox)
+        box.set_right(orbBox, orbEndTime)
+        box.set_top(orbBox, orbHigh)
+        box.set_bottom(orbBox, orbLow)
+    orbHighLine := line.new(orbEndTime, orbHigh, constituentCompletesOrb ? time_close : time_close[1], orbHigh, xloc = xloc.bar_time, color = color.new(selectedSessionColor, 0), width = 2)
+    orbLowLine := line.new(orbEndTime, orbLow, constituentCompletesOrb ? time_close : time_close[1], orbLow, xloc = xloc.bar_time, color = color.new(selectedSessionColor, 0), width = 2)
+    f_registerLine(orbHighLine, orbDay)
+    f_registerLine(orbLowLine, orbDay)
+    if showOrbClosedMarker and not orbCloseMarkerPrinted
+        label marker = label.new(closeMarkerTime, closeMarkerPrice + nz(chartAtr, high - low) * 0.08, "◆", xloc = xloc.bar_time, style = label.style_none, textcolor = chart.fg_color, size = size.tiny, tooltip = selectedOrbSession + " ORB closed")
+        f_registerLabel(marker, orbDay)
+        orbCloseMarkerPrinted := true
+
+if orbFrozen and selectedSessionActive and not na(orbHighLine)
+    line.set_x2(orbHighLine, time_close)
+    line.set_x2(orbLowLine, time_close)
+if selectedSessionEnds and orbFrozen and not na(orbHighLine)
+    line.set_x2(orbHighLine, time_close[1])
+    line.set_x2(orbLowLine, time_close[1])
+
+//=============================================================================
+// 6. Completed Imbalance calculations and strictly-budgeted optional boxes
+//=============================================================================
+
+[oneHourSourceTime, oneHourBullGap, oneHourBullTop, oneHourBullBottom, oneHourBearGap, oneHourBearTop, oneHourBearBottom] = request.security(syminfo.tickerid, "60", [time[1], low[1] > high[3], low[1], high[3], high[1] < low[3], low[3], high[1]], lookahead = barmerge.lookahead_on)
+[fourHourSourceTime, fourHourBullGap, fourHourBullTop, fourHourBullBottom, fourHourBearGap, fourHourBearTop, fourHourBearBottom] = request.security(syminfo.tickerid, "240", [time[1], low[1] > high[3], low[1], high[3], high[1] < low[3], low[3], high[1]], lookahead = barmerge.lookahead_on)
+bool newOneHourSource = not na(oneHourSourceTime) and oneHourSourceTime != oneHourSourceTime[1]
+bool newFourHourSource = not na(fourHourSourceTime) and fourHourSourceTime != fourHourSourceTime[1]
+
+var float latestBullImbalanceTop = na
+var float latestBullImbalanceBottom = na
+var float latestBearImbalanceTop = na
+var float latestBearImbalanceBottom = na
+
+f_addImbalance(float top, float bottom, int direction, string timeframeText) =>
+    color zoneColor = direction == 1 ? color.rgb(0, 170, 120) : color.rgb(210, 75, 75)
+    box zone = box.new(time, top, time_close, bottom, xloc = xloc.bar_time, bgcolor = color.new(zoneColor, 88), border_color = color.new(zoneColor, 35), text = timeframeText + " " + (direction == 1 ? "Bullish Imbalance" : "Bearish Imbalance"), text_color = chart.fg_color, text_size = size.tiny)
+    array.push(imbalanceBoxes, zone)
+    array.push(imbalanceTops, top)
+    array.push(imbalanceBottoms, bottom)
+    array.push(imbalanceDirections, direction)
+    array.push(imbalanceDays, dayKey)
+    f_trimImbalances(maxVisibleZones)
+
+if newOneHourSource
+    if oneHourBullGap
+        latestBullImbalanceTop := oneHourBullTop
+        latestBullImbalanceBottom := oneHourBullBottom
+        if drawImbalances
+            f_addImbalance(oneHourBullTop, oneHourBullBottom, 1, "1H")
+    if oneHourBearGap
+        latestBearImbalanceTop := oneHourBearTop
+        latestBearImbalanceBottom := oneHourBearBottom
+        if drawImbalances
+            f_addImbalance(oneHourBearTop, oneHourBearBottom, -1, "1H")
+if newFourHourSource
+    if fourHourBullGap
+        latestBullImbalanceTop := fourHourBullTop
+        latestBullImbalanceBottom := fourHourBullBottom
+        if drawImbalances
+            f_addImbalance(fourHourBullTop, fourHourBullBottom, 1, "4H")
+    if fourHourBearGap
+        latestBearImbalanceTop := fourHourBearTop
+        latestBearImbalanceBottom := fourHourBearBottom
+        if drawImbalances
+            f_addImbalance(fourHourBearTop, fourHourBearBottom, -1, "4H")
+
+int imbalanceIndex = array.size(imbalanceBoxes) - 1
+while imbalanceIndex >= 0
+    box zone = array.get(imbalanceBoxes, imbalanceIndex)
+    float zoneTop = array.get(imbalanceTops, imbalanceIndex)
+    float zoneBottom = array.get(imbalanceBottoms, imbalanceIndex)
+    int zoneDirection = array.get(imbalanceDirections, imbalanceIndex)
+    bool partlyFilled = zoneDirection == 1 ? low < zoneTop : high > zoneBottom
+    bool fullyFilled = zoneDirection == 1 ? low <= zoneBottom : high >= zoneTop
+    if fullyFilled
+        box.delete(zone)
+        array.remove(imbalanceBoxes, imbalanceIndex)
+        array.remove(imbalanceTops, imbalanceIndex)
+        array.remove(imbalanceBottoms, imbalanceIndex)
+        array.remove(imbalanceDirections, imbalanceIndex)
+        array.remove(imbalanceDays, imbalanceIndex)
+    else
+        box.set_right(zone, time_close)
+        if partlyFilled
+            box.set_bgcolor(zone, color.new(zoneDirection == 1 ? color.rgb(0, 170, 120) : color.rgb(210, 75, 75), 95))
+            box.set_text(zone, (zoneDirection == 1 ? "Bullish" : "Bearish") + " Imbalance - partly filled")
+    imbalanceIndex -= 1
+
+bool reactingBullImbalance = not na(latestBullImbalanceTop) and low <= latestBullImbalanceTop and high >= latestBullImbalanceBottom and close > math.avg(latestBullImbalanceTop, latestBullImbalanceBottom)
+bool reactingBearImbalance = not na(latestBearImbalanceTop) and high >= latestBearImbalanceBottom and low <= latestBearImbalanceTop and close < math.avg(latestBearImbalanceTop, latestBearImbalanceBottom)
+
+//=============================================================================
+// 7. Confirmed approximate Equal highs/lows with a strict visibility budget
+//=============================================================================
+
+const int PIVOT_LEFT = 3
+const int PIVOT_RIGHT = 3
+float pivotHigh = ta.pivothigh(high, PIVOT_LEFT, PIVOT_RIGHT)
+float pivotLow = ta.pivotlow(low, PIVOT_LEFT, PIVOT_RIGHT)
+var float lastPivotHigh = na
+var float lastPivotLow = na
+var int lastPivotHighBar = na
+var int lastPivotLowBar = na
+float liquidityTolerance = math.max(syminfo.mintick * 3, nz(chartAtr[PIVOT_RIGHT]) * 0.03)
+
+if barstate.isconfirmed and not na(pivotHigh)
+    int pivotBar = bar_index - PIVOT_RIGHT
+    if drawLiquidity and not na(lastPivotHigh) and pivotBar - lastPivotHighBar >= 3 and pivotBar - lastPivotHighBar <= 100 and math.abs(pivotHigh - lastPivotHigh) <= liquidityTolerance
+        float level = math.avg(pivotHigh, lastPivotHigh)
+        line levelLine = line.new(lastPivotHighBar, level, pivotBar, level, xloc = xloc.bar_index, color = color.new(color.red, 15), style = line.style_dotted)
+        label levelLabel = label.new(pivotBar, level, "Equal highs", xloc = xloc.bar_index, style = label.style_none, textcolor = chart.fg_color, size = size.tiny)
+        array.push(liquidityLines, levelLine)
+        array.push(liquidityLabels, levelLabel)
+        array.push(liquidityValues, level)
+        array.push(liquidityDirections, 1)
+        array.push(liquiditySwept, false)
+        array.push(liquidityDays, f_dayKey(time[PIVOT_RIGHT]))
+        f_trimLiquidity(maxVisibleZones)
+    lastPivotHigh := pivotHigh
+    lastPivotHighBar := pivotBar
+
+if barstate.isconfirmed and not na(pivotLow)
+    int pivotBar = bar_index - PIVOT_RIGHT
+    if drawLiquidity and not na(lastPivotLow) and pivotBar - lastPivotLowBar >= 3 and pivotBar - lastPivotLowBar <= 100 and math.abs(pivotLow - lastPivotLow) <= liquidityTolerance
+        float level = math.avg(pivotLow, lastPivotLow)
+        line levelLine = line.new(lastPivotLowBar, level, pivotBar, level, xloc = xloc.bar_index, color = color.new(color.lime, 15), style = line.style_dotted)
+        label levelLabel = label.new(pivotBar, level, "Equal lows", xloc = xloc.bar_index, style = label.style_none, textcolor = chart.fg_color, size = size.tiny)
+        array.push(liquidityLines, levelLine)
+        array.push(liquidityLabels, levelLabel)
+        array.push(liquidityValues, level)
+        array.push(liquidityDirections, -1)
+        array.push(liquiditySwept, false)
+        array.push(liquidityDays, f_dayKey(time[PIVOT_RIGHT]))
+        f_trimLiquidity(maxVisibleZones)
+    lastPivotLow := pivotLow
+    lastPivotLowBar := pivotBar
+
+int liquidityIndex = array.size(liquidityLines) - 1
+while liquidityIndex >= 0
+    line levelLine = array.get(liquidityLines, liquidityIndex)
+    label levelLabel = array.get(liquidityLabels, liquidityIndex)
+    float level = array.get(liquidityValues, liquidityIndex)
+    int direction = array.get(liquidityDirections, liquidityIndex)
+    bool swept = array.get(liquiditySwept, liquidityIndex)
+    if not swept
+        line.set_x2(levelLine, bar_index)
+        label.set_x(levelLabel, bar_index)
+        bool sweepNow = barstate.isconfirmed and (direction == 1 ? high > level : low < level)
+        if sweepNow
+            array.set(liquiditySwept, liquidityIndex, true)
+            line.set_color(levelLine, color.new(color.gray, 65))
+            label.set_text(levelLabel, direction == 1 ? "Equal highs - swept" : "Equal lows - swept")
+            label.set_textcolor(levelLabel, color.new(chart.fg_color, 50))
+    liquidityIndex -= 1
+
+//=============================================================================
+// 8. Evidence-based net bias (never a probability)
+//=============================================================================
+
+var bool previousDayLowReclaimed = false
+var bool previousDayHighRejected = false
+var bool asianLowReclaimed = false
+var bool asianHighRejected = false
+if newTradingDay
+    previousDayLowReclaimed := false
+    previousDayHighRejected := false
+    asianLowReclaimed := false
+    asianHighRejected := false
+if barstate.isconfirmed
+    previousDayLowReclaimed := previousDayLowReclaimed or (low < previousDayLow and close > previousDayLow)
+    previousDayHighRejected := previousDayHighRejected or (high > previousDayHigh and close < previousDayHigh)
+    asianLowReclaimed := asianLowReclaimed or (not inAsian and not na(asianLow) and low < asianLow and close > asianLow)
+    asianHighRejected := asianHighRejected or (not inAsian and not na(asianHigh) and high > asianHigh and close < asianHigh)
+
+bool oneHourBull = oneHourClose > oneHourEma
+bool oneHourBear = oneHourClose < oneHourEma
+bool fourHourBull = fourHourClose > fourHourEma
+bool fourHourBear = fourHourClose < fourHourEma
+int bullishEvidence = 0
+int bearishEvidence = 0
+bullishEvidence += close > currentDailyOpen ? 1 : 0
+bearishEvidence += close < currentDailyOpen ? 1 : 0
+bullishEvidence += oneHourBull ? 2 : 0
+bearishEvidence += oneHourBear ? 2 : 0
+bullishEvidence += fourHourBull ? 2 : 0
+bearishEvidence += fourHourBear ? 2 : 0
+bullishEvidence += previousDayLowReclaimed ? 2 : 0
+bearishEvidence += previousDayHighRejected ? 2 : 0
+bullishEvidence += asianLowReclaimed ? 2 : 0
+bearishEvidence += asianHighRejected ? 2 : 0
+bullishEvidence += reactingBullImbalance ? 1 : 0
+bearishEvidence += reactingBearImbalance ? 1 : 0
+bullishEvidence += orbBreakDirection == 1 ? 2 : 0
+bearishEvidence += orbBreakDirection == -1 ? 2 : 0
+int netBias = bullishEvidence - bearishEvidence
+string biasClass = f_biasClass(netBias)
+
+//=============================================================================
+// 9. Neutral ORB break, retest, and continuation observations
+//=============================================================================
+
+float breakDistance = minimumBreakTicks * syminfo.mintick
+bool bullishBreakQualified = barstate.isconfirmed and orbFrozen and selectedSessionActive and bar_index > orbCloseBar and close >= orbHigh + breakDistance and f_strongMove(1, chartAtr) and (not alignBreakWithBias or netBias > 0)
+bool bearishBreakQualified = barstate.isconfirmed and orbFrozen and selectedSessionActive and bar_index > orbCloseBar and close <= orbLow - breakDistance and f_strongMove(-1, chartAtr) and (not alignBreakWithBias or netBias < 0)
+if orbBreakDirection == 0 and (bullishBreakQualified or bearishBreakQualified)
+    orbBreakDirection := bullishBreakQualified ? 1 : -1
+    orbBreakBar := bar_index
+    orbLifecycle := ORB_BREAK
+    orbBreakEvent := true
+
+float retestTolerance = syminfo.mintick * 2
+bool bullishRejection = low <= orbHigh + retestTolerance and close > orbHigh and (validationMode == "Standard" or (math.min(open, close) - low > math.abs(close - open) * 0.5 or (close > open and close >= open[1] and open <= close[1])))
+bool bearishRejection = high >= orbLow - retestTolerance and close < orbLow and (validationMode == "Standard" or (high - math.max(open, close) > math.abs(close - open) * 0.5 or (close < open and close <= open[1] and open >= close[1])))
+if barstate.isconfirmed and orbLifecycle == ORB_BREAK and bar_index > orbBreakBar and bar_index - orbBreakBar <= 20
+    bool retestPass = orbBreakDirection == 1 ? bullishRejection : bearishRejection
+    if retestPass
+        orbLifecycle := ORB_RETEST
+        orbRetestBar := bar_index
+        orbRetestHigh := high
+        orbRetestLow := low
+        orbRetestEvent := true
+if barstate.isconfirmed and orbLifecycle == ORB_RETEST and bar_index > orbRetestBar
+    bool continuationPass = orbBreakDirection == 1 ? close > orbRetestHigh and (validationMode == "Standard" or f_strongMove(1, chartAtr)) : close < orbRetestLow and (validationMode == "Standard" or f_strongMove(-1, chartAtr))
+    if continuationPass
+        orbLifecycle := ORB_CONFIRMED
+        orbLifecycleConfirmedEvent := true
+
+//=============================================================================
+// 10. Mandatory setup sequence and 16-point confluence quality
+//=============================================================================
+
+var float referenceHigh = na
+var float referenceLow = na
+var int bullishState = ST_IDLE
+var int bearishState = ST_IDLE
+var int bullishSweepBar = na
+var int bearishSweepBar = na
+var float bullishSweepExtreme = na
+var float bearishSweepExtreme = na
+var int bullishSetupBreakBar = na
+var int bearishSetupBreakBar = na
+var bool bullishBreakImbalance = false
+var bool bearishBreakImbalance = false
+var int bullishSetupRetestBar = na
+var int bearishSetupRetestBar = na
+var float bullishContinuationLevel = na
+var float bearishContinuationLevel = na
+var bool bullishSignalPrinted = false
+var bool bearishSignalPrinted = false
+var float bullishTargetR = na
+var float bearishTargetR = na
+
+if selectedSessionStarts
+    referenceHigh := selectedOrbSession == "London" ? asianHigh : selectedOrbSession == "New York" ? londonHigh : previousDayHigh
+    referenceLow := selectedOrbSession == "London" ? asianLow : selectedOrbSession == "New York" ? londonLow : previousDayLow
+    bullishState := ST_IDLE
+    bearishState := ST_IDLE
+    bullishSignalPrinted := false
+    bearishSignalPrinted := false
+    bullishTargetR := na
+    bearishTargetR := na
+
+bool bullishSetupConfirmedEvent = false
+bool bearishSetupConfirmedEvent = false
+float sweepDistance = syminfo.mintick
+if barstate.isconfirmed and selectedSessionActive
+    if bullishState == ST_IDLE and not na(referenceLow) and low <= referenceLow - sweepDistance
+        bullishState := ST_SWEPT
+        bullishSweepBar := bar_index
+        bullishSweepExtreme := low
+    if bearishState == ST_IDLE and not na(referenceHigh) and high >= referenceHigh + sweepDistance
+        bearishState := ST_SWEPT
+        bearishSweepBar := bar_index
+        bearishSweepExtreme := high
+
+if bullishState == ST_SWEPT
+    bullishSweepExtreme := math.min(bullishSweepExtreme, low)
+if bearishState == ST_SWEPT
+    bearishSweepExtreme := math.max(bearishSweepExtreme, high)
+
+bool bullishReversal = barstate.isconfirmed and bullishState == ST_SWEPT and bar_index > bullishSweepBar and close > referenceLow and close > open and (validationMode == "Standard" or close > high[1])
+bool bearishReversal = barstate.isconfirmed and bearishState == ST_SWEPT and bar_index > bearishSweepBar and close < referenceHigh and close < open and (validationMode == "Standard" or close < low[1])
+if bullishReversal
+    bullishState := ST_REVERSED
+if bearishReversal
+    bearishState := ST_REVERSED
+
+bool chartBullImbalance = low > high[2]
+bool chartBearImbalance = high < low[2]
+if bullishState == ST_REVERSED and bullishBreakQualified
+    bullishState := ST_BROKEN
+    bullishSetupBreakBar := bar_index
+    bullishBreakImbalance := chartBullImbalance
+if bearishState == ST_REVERSED and bearishBreakQualified
+    bearishState := ST_BROKEN
+    bearishSetupBreakBar := bar_index
+    bearishBreakImbalance := chartBearImbalance
+
+if barstate.isconfirmed and bullishState == ST_BROKEN and bar_index > bullishSetupBreakBar and bar_index - bullishSetupBreakBar <= 20 and bullishRejection
+    bullishState := ST_RETEST
+    bullishSetupRetestBar := bar_index
+    bullishContinuationLevel := high
+if barstate.isconfirmed and bearishState == ST_BROKEN and bar_index > bearishSetupBreakBar and bar_index - bearishSetupBreakBar <= 20 and bearishRejection
+    bearishState := ST_RETEST
+    bearishSetupRetestBar := bar_index
+    bearishContinuationLevel := low
+
+if barstate.isconfirmed and bullishState == ST_RETEST and bar_index > bullishSetupRetestBar and close > bullishContinuationLevel and (validationMode == "Standard" or f_strongMove(1, chartAtr))
+    bullishState := ST_CONFIRMED
+    bullishSetupConfirmedEvent := true
+if barstate.isconfirmed and bearishState == ST_RETEST and bar_index > bearishSetupRetestBar and close < bearishContinuationLevel and (validationMode == "Standard" or f_strongMove(-1, chartAtr))
+    bearishState := ST_CONFIRMED
+    bearishSetupConfirmedEvent := true
+
+if barstate.isconfirmed and selectedSessionActive
+    if bullishState > ST_IDLE and bullishState < ST_CONFIRMED and ((not na(bullishSweepExtreme) and close < bullishSweepExtreme) or (orbFrozen and close < orbLow))
+        bullishState := ST_INVALID
+    if bearishState > ST_IDLE and bearishState < ST_CONFIRMED and ((not na(bearishSweepExtreme) and close > bearishSweepExtreme) or (orbFrozen and close > orbHigh))
+        bearishState := ST_INVALID
+if barstate.isconfirmed and selectedSessionEnds
+    if bullishState > ST_IDLE and bullishState < ST_CONFIRMED
+        bullishState := ST_INVALID
+    if bearishState > ST_IDLE and bearishState < ST_CONFIRMED
+        bearishState := ST_INVALID
+
+f_targetR(int direction, float entryPrice, float stopPrice) =>
+    float target = direction == 1 ? previousDayHigh : previousDayLow
+    if direction == 1 and previousWeekHigh > entryPrice
+        target := not na(target) and target > entryPrice ? math.min(target, previousWeekHigh) : previousWeekHigh
+    if direction == -1 and previousWeekLow < entryPrice
+        target := not na(target) and target < entryPrice ? math.max(target, previousWeekLow) : previousWeekLow
+    float risk = direction == 1 ? entryPrice - stopPrice : stopPrice - entryPrice
+    float reward = direction == 1 ? target - entryPrice : entryPrice - target
+    risk > 0 and reward > 0 ? reward / risk : na
+
+if bullishSetupConfirmedEvent
+    bullishTargetR := f_targetR(1, close, bullishSweepExtreme)
+if bearishSetupConfirmedEvent
+    bearishTargetR := f_targetR(-1, close, bearishSweepExtreme)
+
+f_setupScore(int state, int direction, bool madeImbalance, float targetR) =>
+    int score = 0
+    score += state >= ST_SWEPT and state <= ST_CONFIRMED ? 2 : 0
+    score += state >= ST_REVERSED and state <= ST_CONFIRMED ? 2 : 0
+    score += direction == 1 ? (netBias > 0 ? 2 : 0) : (netBias < 0 ? 2 : 0)
+    score += state >= ST_BROKEN and state <= ST_CONFIRMED ? 1 : 0
+    score += state >= ST_BROKEN and state <= ST_CONFIRMED ? 2 : 0
+    score += madeImbalance ? 1 : 0
+    score += state >= ST_RETEST and state <= ST_CONFIRMED ? 2 : 0
+    score += state == ST_CONFIRMED ? 2 : 0
+    score += not na(targetR) and targetR >= 2.0 ? 1 : 0
+    score += selectedSessionActive ? 1 : 0
+    score
+
+int bullishSetupScore = f_setupScore(bullishState, 1, bullishBreakImbalance, bullishTargetR)
+int bearishSetupScore = f_setupScore(bearishState, -1, bearishBreakImbalance, bearishTargetR)
+
+if bullishSetupConfirmedEvent and showConfirmedSetupMarkers and not bullishSignalPrinted
+    string targetText = na(bullishTargetR) ? "n/a" : str.tostring(bullishTargetR, "#.0") + "R"
+    label signal = label.new(bar_index, low - nz(chartAtr, high - low) * 0.12, "Bullish setup confirmed\nQuality: " + f_quality(bullishSetupScore) + " " + str.tostring(bullishSetupScore) + "/" + str.tostring(SETUP_MAX_SCORE) + "\nTarget space: " + targetText, style = label.style_label_up, color = color.new(color.teal, 10), textcolor = color.white, size = size.tiny)
+    f_registerLabel(signal, dayKey)
+    bullishSignalPrinted := true
+if bearishSetupConfirmedEvent and showConfirmedSetupMarkers and not bearishSignalPrinted
+    string targetText = na(bearishTargetR) ? "n/a" : str.tostring(bearishTargetR, "#.0") + "R"
+    label signal = label.new(bar_index, high + nz(chartAtr, high - low) * 0.12, "Bearish setup confirmed\nQuality: " + f_quality(bearishSetupScore) + " " + str.tostring(bearishSetupScore) + "/" + str.tostring(SETUP_MAX_SCORE) + "\nTarget space: " + targetText, style = label.style_label_down, color = color.new(color.orange, 10), textcolor = color.white, size = size.tiny)
+    f_registerLabel(signal, dayKey)
+    bearishSignalPrinted := true
+
+var label provisionalLabel = na
+bool showProvisional = not confirmedBarsOnly and showDevelopingLabels
+int currentProgress = math.max(f_progress(bullishState), f_progress(bearishState))
+bool bullishCurrent = f_progress(bullishState) >= f_progress(bearishState)
+int currentState = bullishCurrent ? bullishState : bearishState
+int currentScore = bullishCurrent ? bullishSetupScore : bearishSetupScore
+string currentDirection = currentProgress == 0 ? "None" : bullishCurrent ? "Bullish" : "Bearish"
+float currentTargetR = bullishCurrent ? bullishTargetR : bearishTargetR
+if barstate.islast
+    if showProvisional
+        if na(provisionalLabel)
+            provisionalLabel := label.new(bar_index, high + nz(chartAtr, high - low), "", style = label.style_label_left, color = color.new(color.gray, 20), textcolor = color.white, size = size.tiny)
+        label.set_xy(provisionalLabel, bar_index, high + nz(chartAtr, high - low))
+        label.set_text(provisionalLabel, "PROVISIONAL\n" + currentDirection + " - " + f_setupStage(currentState))
+    else if not na(provisionalLabel)
+        label.delete(provisionalLabel)
+        provisionalLabel := na
+
+//=============================================================================
+// 11. Compact 2-column, 8-row dashboard
+//=============================================================================
+
+f_activeSessionText() =>
+    inAsian ? "Asian active" : inLondon ? "London active" : inNewYork ? "New York active" : inCustom ? "Custom active" : "Next: " + preferredSession
+
+int dashboardOrbState = dayKey != orbDay and not selectedSessionActive ? ORB_UPCOMING : orbLifecycle
+string displayClock = str.format_time(time, "HH:mm", f_timezone(displayTimezone))
+string targetDashboardText = currentState == ST_CONFIRMED ? (na(currentTargetR) ? "Target n/a" : "Target " + str.tostring(currentTargetR, "#.0") + "R") : ""
+string qualityDashboardText = f_quality(currentScore) + " " + str.tostring(currentScore) + "/" + str.tostring(SETUP_MAX_SCORE) + (targetDashboardText == "" ? "" : " | " + targetDashboardText)
+
+var table dashboard = table.new(f_position(dashboardPosition), 2, 8, bgcolor = color.new(color.black, 12), border_color = color.new(color.gray, 55), border_width = 1)
+f_dashboardRow(int row, string keyText, string valueText) =>
+    table.cell(dashboard, 0, row, keyText, text_color = color.silver, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(dashboard, 1, row, valueText, text_color = color.white, text_size = size.tiny, text_halign = text.align_right)
+
+if barstate.islast
+    if showDashboard
+        f_dashboardRow(0, "Symbol / pair", syminfo.ticker)
+        f_dashboardRow(1, "Preferred session", preferredSession + (preferredSessionMode == "Auto" ? " (Auto)" : " (Manual)"))
+        f_dashboardRow(2, "Current / next", displayClock + " | " + f_activeSessionText())
+        f_dashboardRow(3, "ORB lifecycle", selectedOrbSession + " - " + f_orbStateText(dashboardOrbState))
+        f_dashboardRow(4, "Net bias", biasClass + " " + f_signed(netBias))
+        f_dashboardRow(5, "Evidence", str.tostring(bullishEvidence) + " bullish / " + str.tostring(bearishEvidence) + " bearish")
+        f_dashboardRow(6, "Setup stage", currentDirection + " - " + f_setupStage(currentState))
+        f_dashboardRow(7, "Setup quality", qualityDashboardText)
+    else
+        table.clear(dashboard, 0, 0, 1, 7)
+
+//=============================================================================
+// 12. One-shot confirmed alerts
+//=============================================================================
+
+string alertDirection = orbBreakDirection == 1 ? "Bullish" : orbBreakDirection == -1 ? "Bearish" : "Neutral"
+if alertsEnabled and barstate.isconfirmed
+    if orbClosedEvent
+        alert(syminfo.ticker + " | " + selectedOrbSession + " | ORB closed | Bias " + biasClass + " " + f_signed(netBias), alert.freq_once_per_bar_close)
+    if orbBreakEvent
+        alert(syminfo.ticker + " | " + selectedOrbSession + " | Confirmed ORB break | " + alertDirection + " | Score " + str.tostring(currentScore) + "/16 | Bias " + biasClass + " " + f_signed(netBias), alert.freq_once_per_bar_close)
+    if orbRetestEvent
+        alert(syminfo.ticker + " | " + selectedOrbSession + " | Retest/rejection confirmed | " + alertDirection + " | Score " + str.tostring(currentScore) + "/16 | Bias " + biasClass + " " + f_signed(netBias), alert.freq_once_per_bar_close)
+    if bullishSetupConfirmedEvent or bearishSetupConfirmedEvent
+        string setupDirection = bullishSetupConfirmedEvent ? "Bullish" : "Bearish"
+        int setupScore = bullishSetupConfirmedEvent ? bullishSetupScore : bearishSetupScore
+        alert(syminfo.ticker + " | " + selectedOrbSession + " | Final setup confirmed | " + setupDirection + " | Score " + str.tostring(setupScore) + "/16 | Bias " + biasClass + " " + f_signed(netBias), alert.freq_once_per_bar_close)
+
+alertcondition(alertsEnabled and orbClosedEvent, "ORB closed", "{{ticker}} {{interval}}: ORB closed on a confirmed bar.")
+alertcondition(alertsEnabled and orbBreakEvent, "Confirmed ORB break", "{{ticker}} {{interval}}: confirmed ORB break with minimum distance and strong-move qualification.")
+alertcondition(alertsEnabled and orbRetestEvent, "Retest/rejection confirmed", "{{ticker}} {{interval}}: ORB retest/rejection confirmed.")
+alertcondition(alertsEnabled and (bullishSetupConfirmedEvent or bearishSetupConfirmedEvent), "Final setup confirmed", "{{ticker}} {{interval}}: mandatory setup sequence confirmed. Review the dashboard for score and net bias.")

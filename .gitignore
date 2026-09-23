@@ -1,0 +1,41 @@
+# macOS and editor files
+.DS_Store
+**/.DS_Store
+*.swp
+*.tmp
+~$*
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# JavaScript dependencies and build output
+node_modules/
+.next/
+.vinext/
+dist/
+coverage/
+.wrangler/
+
+# Credentials and local configuration
+.env
+.env.*
+*.pem
+
+# Generated QA and temporary output
+tmp/
+outputs/
+
+# Local historical copies are superseded by Git history
+Backups/
+
+# Raw exports can contain account-specific trading information. Keep them local.
+Strategy Tester Results/
+
+# Licensed third-party visual reference; never redistribute it.
+Pine Script/ICT Pine Script.txt
+
+# This dashboard is maintained in its own Git repository.
+market-dashboard/

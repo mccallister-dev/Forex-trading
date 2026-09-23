@@ -1,0 +1,400 @@
+//@version=6
+strategy(
+    "ORB + ICT Backtest Strategy v1",
+    shorttitle = "ORB ICT Backtest v1",
+    overlay = true,
+    initial_capital = 10000,
+    currency = "ZAR",
+    pyramiding = 0,
+    commission_type = strategy.commission.percent,
+    commission_value = 0.0,
+    slippage = 1,
+    process_orders_on_close = false,
+    calc_on_order_fills = false,
+    calc_on_every_tick = false,
+    margin_long = 0.2,
+    margin_short = 0.2,
+    max_lines_count = 100,
+    max_labels_count = 100,
+    max_boxes_count = 50
+)
+
+// Backtest companion to the ORB + ICT Session Liquidity Framework indicator.
+// Confirmed bars only. Orders are generated at a bar close and fill at the
+// next available bar open, TradingView's more conservative default behavior.
+
+const string G_TEST = "Backtest"
+const string G_SESSION = "Session and ORB"
+const string G_ENTRY = "Entry validation"
+const string G_RISK = "Risk and exits"
+const string G_COSTS = "Broker model reminders"
+
+const int ST_IDLE = 0
+const int ST_SWEPT = 1
+const int ST_REVERSED = 2
+const int ST_BROKEN = 3
+const int ST_RETEST = 4
+const int ST_CONFIRMED = 5
+const int ST_INVALID = 6
+
+//=============================================================================
+// 1. Inputs
+//=============================================================================
+
+int testStart = input.time(timestamp("01 Jan 2023 00:00 +0000"), "Start date", group = G_TEST)
+int testEnd = input.time(timestamp("31 Dec 2035 23:59 +0000"), "End date", group = G_TEST)
+string tradeDirection = input.string("Both", "Trade direction", options = ["Both", "Long only", "Short only"], group = G_TEST)
+string entryModel = input.string("Break + retest", "Entry model", options = ["Close breakout", "Break + retest", "Full framework"], group = G_TEST, tooltip = "Full framework requires sweep, reclaim, strong ORB break, retest/rejection, and continuation in that order.")
+
+string preferredSessionMode = input.string("Auto", "Preferred session mode", options = ["Auto", "Manual"], group = G_SESSION)
+string manualPreferredSession = input.string("New York", "Manual preferred session", options = ["Asian", "London", "New York"], group = G_SESSION)
+string orbSessionChoice = input.string("Auto", "ORB session", options = ["Auto", "Asian", "London", "New York"], group = G_SESSION)
+string orbDurationChoice = input.string("30", "ORB duration (minutes)", options = ["5", "15", "30", "60", "Custom"], group = G_SESSION)
+int orbCustomMinutes = input.int(20, "Custom ORB minutes", minval = 1, maxval = 240, group = G_SESSION)
+
+string asianSession = input.session("0000-0800:1234567", "Asian session", group = G_SESSION)
+string asianTimezone = input.string("Europe/London", "Asian timezone", options = ["Exchange", "UTC", "Europe/London", "America/New_York", "Africa/Johannesburg", "Asia/Tokyo", "Australia/Sydney"], group = G_SESSION)
+string londonSession = input.session("0800-1600:1234567", "London session", group = G_SESSION)
+string londonTimezone = input.string("Europe/London", "London timezone", options = ["Exchange", "UTC", "Europe/London", "America/New_York", "Africa/Johannesburg", "Asia/Tokyo", "Australia/Sydney"], group = G_SESSION)
+string newYorkSession = input.session("0800-1700:1234567", "New York session", group = G_SESSION)
+string newYorkTimezone = input.string("America/New_York", "New York timezone", options = ["Exchange", "UTC", "Europe/London", "America/New_York", "Africa/Johannesburg", "Asia/Tokyo", "Australia/Sydney"], group = G_SESSION)
+bool showSessionShade = input.bool(true, "Shade selected session", group = G_SESSION)
+bool showOrbLevels = input.bool(true, "Show ORB levels", group = G_SESSION)
+
+string validationMode = input.string("Standard", "Validation mode", options = ["Standard", "Strict"], group = G_ENTRY)
+int minimumBreakTicks = input.int(1, "Minimum ORB break distance (ticks)", minval = 0, maxval = 100, group = G_ENTRY)
+int sweepToleranceTicks = input.int(1, "Liquidity sweep distance (ticks)", minval = 0, maxval = 100, group = G_ENTRY)
+int retestToleranceTicks = input.int(2, "Retest tolerance (ticks)", minval = 0, maxval = 100, group = G_ENTRY)
+int maxRetestBars = input.int(20, "Maximum bars to retest", minval = 1, maxval = 100, group = G_ENTRY)
+string biasFilter = input.string("None", "Directional filter", options = ["None", "Daily open", "1H + 4H trend"], group = G_ENTRY)
+
+float riskPercent = input.float(1.0, "Equity risk per trade (%)", minval = 0.1, maxval = 10.0, step = 0.1, group = G_RISK)
+float brokerLeverage = input.float(500.0, "Exposure cap leverage", minval = 1.0, maxval = 500.0, step = 1.0, group = G_RISK, tooltip = "Keep this aligned with the Long/Short leverage values in Strategy Properties. The script default is 500:1 (0.2% margin).")
+string stopModel = input.string("Opposite ORB", "Stop model", options = ["Opposite ORB", "Signal candle", "ATR"], group = G_RISK)
+float stopAtrMultiple = input.float(1.5, "ATR stop multiple", minval = 0.1, maxval = 10.0, step = 0.1, group = G_RISK)
+int stopBufferTicks = input.int(2, "Stop buffer (ticks)", minval = 0, maxval = 100, group = G_RISK)
+float rewardRisk = input.float(2.0, "Profit target (R)", minval = 0.25, maxval = 10.0, step = 0.25, group = G_RISK)
+bool closeAtSessionEnd = input.bool(true, "Close open trade after session", group = G_RISK)
+
+string costsReminder = input.string("Set broker spread/fees in Properties", "Costs", options = ["Set broker spread/fees in Properties"], group = G_COSTS, tooltip = "The script starts with 1 tick of slippage and 0% commission. Change these in Strategy Settings > Properties for each broker feed.")
+
+//=============================================================================
+// 2. Helpers and completed reference data
+//=============================================================================
+
+f_timezone(string choice) =>
+    choice == "Exchange" ? syminfo.timezone : choice
+
+f_durationMinutes() =>
+    orbDurationChoice == "Custom" ? orbCustomMinutes : int(str.tonumber(orbDurationChoice))
+
+f_autoPreferred() =>
+    string normalized = str.upper(syminfo.root + " " + syminfo.ticker)
+    bool europe = str.contains(normalized, "EUR") or str.contains(normalized, "GBP") or str.contains(normalized, "CHF")
+    bool asiaPacific = str.contains(normalized, "JPY") or str.contains(normalized, "AUD") or str.contains(normalized, "NZD")
+    syminfo.type == "crypto" ? "Asian" : syminfo.type == "forex" and europe ? "London" : syminfo.type == "forex" and asiaPacific ? "Asian" : "New York"
+
+f_trackRange(string sessionSpec, string zoneChoice) =>
+    string zone = f_timezone(zoneChoice)
+    bool active = not na(time(timeframe.period, sessionSpec, zone))
+    bool starts = active and (barstate.isfirst or not active[1])
+    bool ends = not active and not barstate.isfirst and active[1]
+    var float rangeHigh = na
+    var float rangeLow = na
+    if starts
+        rangeHigh := high
+        rangeLow := low
+    else if active
+        rangeHigh := math.max(rangeHigh, high)
+        rangeLow := math.min(rangeLow, low)
+    [rangeHigh, rangeLow, active, starts, ends]
+
+f_strongMove(int direction, float atrValue) =>
+    float candleRange = high - low
+    float candleBody = math.abs(close - open)
+    float bodyAtrMinimum = validationMode == "Strict" ? 1.0 : 0.75
+    float bodyPercentMinimum = validationMode == "Strict" ? 60.0 : 50.0
+    bool directionPass = direction == 1 ? close > open : close < open
+    bool bodyPass = not na(atrValue) and candleBody >= atrValue * bodyAtrMinimum
+    bool bodyPercentPass = candleRange > 0 and candleBody / candleRange * 100.0 >= bodyPercentMinimum
+    bool closeNearPass = candleRange > 0 and (direction == 1 ? high - close <= candleRange * 0.25 : close - low <= candleRange * 0.25)
+    directionPass and bodyPass and bodyPercentPass and closeNearPass
+
+f_roundQuantity(float rawQuantity) =>
+    float quantityStep = math.max(syminfo.mincontract, 0.00000001)
+    math.floor(rawQuantity / quantityStep) * quantityStep
+
+f_directionAllowed(int direction) =>
+    direction == 1 ? tradeDirection != "Short only" : tradeDirection != "Long only"
+
+[previousDayHigh, previousDayLow, currentDailyOpen] = request.security(syminfo.tickerid, "1D", [high[1], low[1], open], lookahead = barmerge.lookahead_on)
+[oneHourClose, oneHourEma] = request.security(syminfo.tickerid, "60", [close[1], ta.ema(close, 50)[1]], lookahead = barmerge.lookahead_on)
+[fourHourClose, fourHourEma] = request.security(syminfo.tickerid, "240", [close[1], ta.ema(close, 50)[1]], lookahead = barmerge.lookahead_on)
+
+f_biasPass(int direction) =>
+    biasFilter == "None" ? true : biasFilter == "Daily open" ? (direction == 1 ? close > currentDailyOpen : close < currentDailyOpen) : (direction == 1 ? oneHourClose > oneHourEma and fourHourClose > fourHourEma : oneHourClose < oneHourEma and fourHourClose < fourHourEma)
+
+float chartAtr = ta.atr(14)
+int orbMinutes = f_durationMinutes()
+bool validTimeframe = timeframe.in_seconds() <= orbMinutes * 60
+bool insideDateRange = time >= testStart and time <= testEnd
+
+//=============================================================================
+// 3. Session ranges and selected ORB lifecycle
+//=============================================================================
+
+[asianHigh, asianLow, inAsian, asianStarts, asianEnds] = f_trackRange(asianSession, asianTimezone)
+[londonHigh, londonLow, inLondon, londonStarts, londonEnds] = f_trackRange(londonSession, londonTimezone)
+[newYorkHigh, newYorkLow, inNewYork, newYorkStarts, newYorkEnds] = f_trackRange(newYorkSession, newYorkTimezone)
+
+string preferredSession = preferredSessionMode == "Manual" ? manualPreferredSession : f_autoPreferred()
+string selectedSession = orbSessionChoice == "Auto" ? preferredSession : orbSessionChoice
+bool selectedSessionActive = selectedSession == "Asian" ? inAsian : selectedSession == "London" ? inLondon : inNewYork
+bool selectedSessionStarts = selectedSession == "Asian" ? asianStarts : selectedSession == "London" ? londonStarts : newYorkStarts
+bool selectedSessionEnds = selectedSession == "Asian" ? asianEnds : selectedSession == "London" ? londonEnds : newYorkEnds
+
+var float orbHigh = na
+var float orbLow = na
+var int orbStartTime = na
+var int orbEndTime = na
+var int orbCloseBar = na
+var bool orbFrozen = false
+var bool tradedThisSession = false
+
+var float referenceHigh = na
+var float referenceLow = na
+
+var int longState = ST_IDLE
+var int shortState = ST_IDLE
+var int longSweepBar = na
+var int shortSweepBar = na
+var float longSweepExtreme = na
+var float shortSweepExtreme = na
+
+var int breakDirection = 0
+var int breakBar = na
+var int retestBar = na
+var float retestHigh = na
+var float retestLow = na
+
+if selectedSessionStarts
+    orbHigh := high
+    orbLow := low
+    orbStartTime := time
+    orbEndTime := time + orbMinutes * 60000
+    orbCloseBar := na
+    orbFrozen := false
+    tradedThisSession := false
+    referenceHigh := selectedSession == "London" ? asianHigh : selectedSession == "New York" ? londonHigh : previousDayHigh
+    referenceLow := selectedSession == "London" ? asianLow : selectedSession == "New York" ? londonLow : previousDayLow
+    longState := ST_IDLE
+    shortState := ST_IDLE
+    longSweepBar := na
+    shortSweepBar := na
+    longSweepExtreme := na
+    shortSweepExtreme := na
+    breakDirection := 0
+    breakBar := na
+    retestBar := na
+    retestHigh := na
+    retestLow := na
+
+bool orbConstituentBar = selectedSessionActive and not na(orbStartTime) and time < orbEndTime and not orbFrozen
+if orbConstituentBar
+    orbHigh := math.max(orbHigh, high)
+    orbLow := math.min(orbLow, low)
+
+bool constituentCompletesOrb = orbConstituentBar and time_close >= orbEndTime
+bool sessionEndedEarly = selectedSessionEnds and not orbFrozen and not na(orbStartTime)
+if barstate.isconfirmed and not orbFrozen and (constituentCompletesOrb or sessionEndedEarly)
+    orbFrozen := true
+    orbCloseBar := constituentCompletesOrb ? bar_index : bar_index - 1
+
+//=============================================================================
+// 4. Entry sequence
+//=============================================================================
+
+float sweepDistance = sweepToleranceTicks * syminfo.mintick
+if barstate.isconfirmed and selectedSessionActive and entryModel == "Full framework"
+    if longState == ST_IDLE and not na(referenceLow) and low <= referenceLow - sweepDistance
+        longState := ST_SWEPT
+        longSweepBar := bar_index
+        longSweepExtreme := low
+    if shortState == ST_IDLE and not na(referenceHigh) and high >= referenceHigh + sweepDistance
+        shortState := ST_SWEPT
+        shortSweepBar := bar_index
+        shortSweepExtreme := high
+
+if longState == ST_SWEPT
+    longSweepExtreme := math.min(longSweepExtreme, low)
+if shortState == ST_SWEPT
+    shortSweepExtreme := math.max(shortSweepExtreme, high)
+
+bool longReversal = barstate.isconfirmed and longState == ST_SWEPT and bar_index > longSweepBar and close > referenceLow and close > open and (validationMode == "Standard" or close > high[1])
+bool shortReversal = barstate.isconfirmed and shortState == ST_SWEPT and bar_index > shortSweepBar and close < referenceHigh and close < open and (validationMode == "Standard" or close < low[1])
+if longReversal
+    longState := ST_REVERSED
+if shortReversal
+    shortState := ST_REVERSED
+
+float breakDistance = minimumBreakTicks * syminfo.mintick
+bool longBreakReady = entryModel != "Full framework" or longState == ST_REVERSED
+bool shortBreakReady = entryModel != "Full framework" or shortState == ST_REVERSED
+bool longBreakQualified = barstate.isconfirmed and orbFrozen and selectedSessionActive and bar_index > orbCloseBar and close >= orbHigh + breakDistance and f_strongMove(1, chartAtr) and f_biasPass(1) and longBreakReady
+bool shortBreakQualified = barstate.isconfirmed and orbFrozen and selectedSessionActive and bar_index > orbCloseBar and close <= orbLow - breakDistance and f_strongMove(-1, chartAtr) and f_biasPass(-1) and shortBreakReady
+
+bool longSignal = false
+bool shortSignal = false
+
+if breakDirection == 0 and (longBreakQualified or shortBreakQualified)
+    breakDirection := longBreakQualified ? 1 : -1
+    breakBar := bar_index
+    if breakDirection == 1 and entryModel == "Full framework"
+        longState := ST_BROKEN
+    if breakDirection == -1 and entryModel == "Full framework"
+        shortState := ST_BROKEN
+    if entryModel == "Close breakout"
+        longSignal := breakDirection == 1
+        shortSignal := breakDirection == -1
+
+float retestTolerance = retestToleranceTicks * syminfo.mintick
+bool longRetestRejection = low <= orbHigh + retestTolerance and close > orbHigh and (validationMode == "Standard" or (math.min(open, close) - low > math.abs(close - open) * 0.5 or (close > open and close >= open[1] and open <= close[1])))
+bool shortRetestRejection = high >= orbLow - retestTolerance and close < orbLow and (validationMode == "Standard" or (high - math.max(open, close) > math.abs(close - open) * 0.5 or (close < open and close <= open[1] and open >= close[1])))
+
+if barstate.isconfirmed and breakDirection != 0 and not na(breakBar) and bar_index > breakBar and bar_index - breakBar <= maxRetestBars
+    bool retestPass = breakDirection == 1 ? longRetestRejection : shortRetestRejection
+    if retestPass and na(retestBar)
+        retestBar := bar_index
+        retestHigh := high
+        retestLow := low
+        if entryModel == "Break + retest"
+            longSignal := breakDirection == 1
+            shortSignal := breakDirection == -1
+        if entryModel == "Full framework"
+            if breakDirection == 1
+                longState := ST_RETEST
+            else
+                shortState := ST_RETEST
+
+if barstate.isconfirmed and entryModel == "Full framework" and not na(retestBar) and bar_index > retestBar
+    bool continuationPass = breakDirection == 1 ? close > retestHigh and (validationMode == "Standard" or f_strongMove(1, chartAtr)) : close < retestLow and (validationMode == "Standard" or f_strongMove(-1, chartAtr))
+    if continuationPass
+        if breakDirection == 1 and longState == ST_RETEST
+            longState := ST_CONFIRMED
+            longSignal := true
+        if breakDirection == -1 and shortState == ST_RETEST
+            shortState := ST_CONFIRMED
+            shortSignal := true
+
+if barstate.isconfirmed and entryModel == "Full framework" and selectedSessionActive
+    if longState > ST_IDLE and longState < ST_CONFIRMED and ((not na(longSweepExtreme) and close < longSweepExtreme) or (orbFrozen and close < orbLow))
+        longState := ST_INVALID
+    if shortState > ST_IDLE and shortState < ST_CONFIRMED and ((not na(shortSweepExtreme) and close > shortSweepExtreme) or (orbFrozen and close > orbHigh))
+        shortState := ST_INVALID
+
+if not na(breakBar) and bar_index - breakBar > maxRetestBars and na(retestBar)
+    if breakDirection == 1 and longState == ST_BROKEN
+        longState := ST_INVALID
+    if breakDirection == -1 and shortState == ST_BROKEN
+        shortState := ST_INVALID
+
+//=============================================================================
+// 5. Risk-normalized order sizing and bracket exits
+//=============================================================================
+
+f_stopPrice(int direction) =>
+    float buffer = stopBufferTicks * syminfo.mintick
+    stopModel == "ATR" ? (direction == 1 ? close - chartAtr * stopAtrMultiple : close + chartAtr * stopAtrMultiple) : stopModel == "Signal candle" ? (direction == 1 ? low - buffer : high + buffer) : (direction == 1 ? orbLow - buffer : orbHigh + buffer)
+
+f_orderQuantity(float assumedEntry, float stopPrice) =>
+    float riskAmountAccount = strategy.equity * riskPercent / 100.0
+    float riskAmountSymbol = strategy.convert_to_symbol(riskAmountAccount)
+    float riskPerContractSymbol = math.abs(assumedEntry - stopPrice) * syminfo.pointvalue
+    float riskQuantity = riskPerContractSymbol > 0 ? riskAmountSymbol / riskPerContractSymbol : 0.0
+    float equitySymbol = strategy.convert_to_symbol(strategy.equity)
+    float maximumQuantity = assumedEntry > 0 and syminfo.pointvalue > 0 ? equitySymbol * brokerLeverage / (assumedEntry * syminfo.pointvalue) : 0.0
+    f_roundQuantity(math.min(riskQuantity, maximumQuantity))
+
+var float activeStop = na
+var float activeTarget = na
+var float lastPlannedQuantity = na
+var float lastRequiredLeverage = na
+
+bool canPlaceTrade = insideDateRange and validTimeframe and selectedSessionActive and not tradedThisSession and strategy.position_size == 0
+
+if longSignal and canPlaceTrade and f_directionAllowed(1)
+    float plannedStop = f_stopPrice(1)
+    float plannedRisk = close - plannedStop
+    float orderQuantity = plannedRisk > 0 ? f_orderQuantity(close, plannedStop) : 0.0
+    if orderQuantity >= syminfo.mincontract
+        activeStop := plannedStop
+        activeTarget := close + plannedRisk * rewardRisk
+        lastPlannedQuantity := orderQuantity
+        float equitySymbol = strategy.convert_to_symbol(strategy.equity)
+        lastRequiredLeverage := equitySymbol > 0 ? orderQuantity * close * syminfo.pointvalue / equitySymbol : na
+        strategy.entry("Long", strategy.long, qty = orderQuantity, comment = entryModel)
+        strategy.exit("Long exit", "Long", stop = activeStop, limit = activeTarget)
+        tradedThisSession := true
+
+if shortSignal and canPlaceTrade and f_directionAllowed(-1)
+    float plannedStop = f_stopPrice(-1)
+    float plannedRisk = plannedStop - close
+    float orderQuantity = plannedRisk > 0 ? f_orderQuantity(close, plannedStop) : 0.0
+    if orderQuantity >= syminfo.mincontract
+        activeStop := plannedStop
+        activeTarget := close - plannedRisk * rewardRisk
+        lastPlannedQuantity := orderQuantity
+        float equitySymbol = strategy.convert_to_symbol(strategy.equity)
+        lastRequiredLeverage := equitySymbol > 0 ? orderQuantity * close * syminfo.pointvalue / equitySymbol : na
+        strategy.entry("Short", strategy.short, qty = orderQuantity, comment = entryModel)
+        strategy.exit("Short exit", "Short", stop = activeStop, limit = activeTarget)
+        tradedThisSession := true
+
+if strategy.position_size > 0
+    strategy.exit("Long exit", "Long", stop = activeStop, limit = activeTarget)
+if strategy.position_size < 0
+    strategy.exit("Short exit", "Short", stop = activeStop, limit = activeTarget)
+
+if closeAtSessionEnd and selectedSessionEnds and strategy.position_size != 0
+    strategy.close_all(comment = "Session end", immediately = true)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeStop := na
+    activeTarget := na
+
+//=============================================================================
+// 6. Clean chart and Data Window diagnostics
+//=============================================================================
+
+color sessionColor = selectedSession == "Asian" ? color.rgb(65, 105, 225) : selectedSession == "London" ? color.rgb(0, 150, 136) : color.rgb(244, 140, 45)
+bgcolor(showSessionShade and selectedSessionActive ? color.new(sessionColor, 94) : na, title = "Selected session")
+
+bool showRange = showOrbLevels and not na(orbStartTime) and (selectedSessionActive or orbFrozen)
+plot(showRange ? orbHigh : na, "ORB high", color = color.new(sessionColor, 0), linewidth = 2, style = plot.style_linebr)
+plot(showRange ? orbLow : na, "ORB low", color = color.new(sessionColor, 0), linewidth = 2, style = plot.style_linebr)
+plot(showRange and orbFrozen ? math.avg(orbHigh, orbLow) : na, "ORB midpoint", color = color.new(sessionColor, 65), linewidth = 1, style = plot.style_linebr)
+
+plot(strategy.position_size != 0 ? activeStop : na, "Active stop", color = color.new(color.red, 0), linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size != 0 ? activeTarget : na, "Active target", color = color.new(color.green, 0), linewidth = 1, style = plot.style_linebr)
+
+plotshape(longSignal and canPlaceTrade, title = "Long signal", style = shape.triangleup, location = location.belowbar, color = color.new(color.teal, 0), size = size.tiny, text = "L")
+plotshape(shortSignal and canPlaceTrade, title = "Short signal", style = shape.triangledown, location = location.abovebar, color = color.new(color.orange, 0), size = size.tiny, text = "S")
+
+plot(lastPlannedQuantity, "Last planned quantity", display = display.data_window)
+plot(lastRequiredLeverage, "Last required leverage", display = display.data_window)
+plot(strategy.equity, "Strategy equity (ZAR)", display = display.data_window)
+plot(validTimeframe ? 1 : 0, "Timeframe valid (1 = yes)", display = display.data_window)
+
+var table status = table.new(position.top_right, 2, 6, bgcolor = color.new(color.black, 15), border_color = color.new(color.gray, 60), border_width = 1)
+f_row(int row, string keyText, string valueText) =>
+    table.cell(status, 0, row, keyText, text_color = color.silver, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(status, 1, row, valueText, text_color = color.white, text_size = size.tiny, text_halign = text.align_right)
+
+if barstate.islast
+    f_row(0, "Pair / symbol", syminfo.ticker)
+    f_row(1, "Session", selectedSession + (orbSessionChoice == "Auto" ? " (Auto)" : ""))
+    f_row(2, "Entry model", entryModel)
+    f_row(3, "Account", "ZAR 10,000 start")
+    f_row(4, "Risk / leverage cap", str.tostring(riskPercent, "#.0") + "% / " + str.tostring(brokerLeverage, "#") + ":1")
+    f_row(5, "Chart timeframe", validTimeframe ? "Valid" : "Too large for ORB")
+
